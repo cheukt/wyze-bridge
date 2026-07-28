@@ -79,3 +79,16 @@ func TestFilter_NeverFilterToEmpty(t *testing.T) {
 		t.Errorf("should not filter to empty: got %d, want %d", len(result), len(cams))
 	}
 }
+
+func TestFilter_AllowEmpty(t *testing.T) {
+	f := &Filter{Names: []string{"NONEXISTENT"}, AllowEmpty: true}
+	if result := f.Apply(makeCams()); len(result) != 0 {
+		t.Errorf("AllowEmpty: explicit no-match should yield 0, got %d", len(result))
+	}
+
+	// AllowEmpty must not change a normal match.
+	f = &Filter{Names: []string{"FRONT DOOR"}, AllowEmpty: true}
+	if result := f.Apply(makeCams()); len(result) != 1 {
+		t.Errorf("AllowEmpty: matching filter should still match, got %d", len(result))
+	}
+}

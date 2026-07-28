@@ -12,6 +12,14 @@ type Filter struct {
 	Models []string // FILTER_MODELS (uppercased)
 	MACs   []string // FILTER_MACS (uppercased)
 	Block  bool     // FILTER_BLOCKS: if true, listed cameras are excluded
+
+	// AllowEmpty disables the "never filter to empty" safety net. By default a
+	// filter that matches no cameras falls back to returning all of them (so a
+	// fleet-wide typo doesn't blank every stream). When AllowEmpty is true an
+	// explicit filter that matches nothing yields an empty list — the right
+	// behavior when the filter is an intentional allow-list of streams to
+	// expose (the Viam module).
+	AllowEmpty bool
 }
 
 // HasFilters returns true if any filter criteria are set.
@@ -41,7 +49,7 @@ func (f *Filter) Apply(cameras []wyzeapi.CameraInfo) []wyzeapi.CameraInfo {
 		}
 	}
 
-	if len(result) == 0 {
+	if len(result) == 0 && !f.AllowEmpty {
 		return cameras // never filter to empty
 	}
 	return result

@@ -71,6 +71,7 @@ go2rtc handles all TUTK cameras and all WebRTC (doorbell-lineage) cameras. For O
 | `internal/snapshot/` | Interval + sunrise/sunset snapshot capture via go2rtc API, file pruning |
 | `internal/recording/` | Recording config generation for go2rtc, mp4 file pruning |
 | `internal/webhooks/` | HTTP POST notifications on camera state changes |
+| `internal/viammod/` | Viam module (`cmd/viam-module`): the `cheukt:wyze-bridge:manager` generic service (embeds the wyze core, publishes loopback RTSP) and the `cheukt:wyze-bridge:conditional-camera` component (gates data-management captures on recent Wyze motion events; optionally — opt-in via a `stamp` config block, default off — stamps each captured frame with the active Wyze `event_id` as a classification + full-frame `wyze_event:<id>` bounding box so uploaded images are groupable by event). The LAN-local dashboard was split out into the separate `cheukt:home` module (`github.com/cheukt/home`, model `cheukt:home:home-ui`); it consumes this module's `list_cameras` DoCommand and the `wyze_event:` label schema. See `DOCS/VIAM_MODULE_PLAN.md` and `DOCS/MODULE_SPLIT_PLAN.md`. |
 
 ### Key Design Patterns
 
@@ -107,7 +108,7 @@ Minimal: zerolog, paho.mqtt.golang, go-sunrise, go-isatty, yaml.v3. No web frame
 
 ## Docker
 
-`docker/Dockerfile` — 3-stage Alpine build. Target image < 25MB. Multi-arch via `TARGETARCH`.
+`docker/Dockerfile` — 3-stage Alpine build, ~60–65 MB (the bundled ffmpeg, used for go2rtc JPEG snapshots and the gwell-proxy sidecar, accounts for ~40 MB of that; the Go binaries alone are ~25 MB). Multi-arch via `TARGETARCH`.
 
 ## Git
 

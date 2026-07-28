@@ -141,6 +141,54 @@ go run ./cmd/wyze-bridge
 
 Camera names are lowercase with underscores: "Front Door" becomes `front_door`.
 
+## Viam Module
+
+The `cmd/viam-module` entrypoint packages the bridge core as a Viam module with
+two models: the `cheukt:wyze-bridge:manager` generic service (the core) and the
+optional `cheukt:wyze-bridge:conditional-camera` component (gates a camera's
+data-management captures on recent Wyze motion events). It bundles the module
+binary plus the pinned `go2rtc` into `module.tar.gz`. See
+[cmd/viam-module/README.md](cmd/viam-module/README.md) for both models'
+configuration.
+
+The LAN-local dashboard now lives in a separate module,
+[`cheukt:home:home-ui`](https://github.com/cheukt/home).
+
+### Build the bundle
+
+```bash
+make module.tar.gz    # builds bin/viam-module + downloads go2rtc, produces module.tar.gz
+make clean-module     # remove bin/ and module.tar.gz
+```
+
+It's a pure Go build plus the pinned `go2rtc` download — no Node toolchain
+required.
+
+### Cloud hot-reload to a running machine
+
+`make reload` pushes the module to a live machine part and restarts it, so you
+can iterate without a full deploy. The Viam CLI runs `meta.json`'s build step
+and reloads the module on the part.
+
+1. Copy the env template and set your part id (gitignored):
+
+   ```bash
+   cp .env.viam.example .env.viam
+   # Edit .env.viam and set VIAM_PART_ID
+   ```
+
+   Find the part id in the Viam app under your machine's part → **Copy part ID**.
+
+2. Make sure you're logged in (`viam login`), then:
+
+   ```bash
+   make reload
+   ```
+
+`make reload` reads `VIAM_PART_ID` from `.env.viam` and runs
+`viam module reload --part-id $VIAM_PART_ID`. It errors early if `.env.viam` is
+missing or the part id is unset.
+
 ## Testing
 
 ```bash
@@ -206,6 +254,7 @@ internal/
   snapshot/                  Interval + sunrise/sunset capture, pruning
   recording/                 Config generation, file pruning
   webhooks/                  HTTP POST notifications on state changes
+  viammod/                   Viam module: manager service + conditional-camera component
 ```
 
 ## Adding a New Feature

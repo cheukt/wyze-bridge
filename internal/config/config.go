@@ -48,10 +48,11 @@ type Config struct {
 	MQTTDiscoveryTopic string // HA discovery prefix
 
 	// Camera Filtering
-	FilterNames  []string
-	FilterModels []string
-	FilterMACs   []string
-	FilterBlocks bool
+	FilterNames      []string
+	FilterModels     []string
+	FilterMACs       []string
+	FilterBlocks     bool
+	FilterAllowEmpty bool // if true, an explicit filter matching nothing yields no cameras (no fallback-to-all)
 
 	// Camera Defaults
 	Quality     string

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "cheukt:wyze-bridge",
+  "visibility": "private",
+  "url": "https://github.com/cheukt/wyze-bridge",
+  "description": "Exposes Wyze cameras to a Viam machine as loopback RTSP streams via an embedded go2rtc core.",
+  "models": [
+    {
+      "api": "rdk:service:generic",
+      "model": "cheukt:wyze-bridge:manager",
+      "short_description": "Wyze bridge manager: discovers cameras and publishes RTSP streams via embedded go2rtc."
+    },
+    {
+      "api": "rdk:component:camera",
+      "model": "cheukt:wyze-bridge:conditional-camera",
+      "short_description": "Gates a camera's data-management captures on recent Wyze motion events from the manager."
+    }
+  ],
+  "entrypoint": "bin/viam-module",
+  "build": {
+    "build": "make module.tar.gz",
+    "path": "module.tar.gz",
+    "arch": ["linux/amd64", "linux/arm64", "darwin/arm64"]
+  }
+}
