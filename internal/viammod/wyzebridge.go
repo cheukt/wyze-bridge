@@ -3,7 +3,7 @@
 // embedded go2rtc in-process and publishes each camera as a loopback RTSP
 // stream that standard viam:viamrtsp:rtsp camera components consume. Wyze
 // credentials are read from an on-machine creds_file, never from the Viam
-// cloud config. See DOCS/VIAM_MODULE_PLAN.md.
+// cloud config. See DOCS/VIAM_MODULE.md.
 package viammod
 
 import (

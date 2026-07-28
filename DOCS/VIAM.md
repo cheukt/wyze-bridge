@@ -16,8 +16,8 @@ The `cheukt:wyze-bridge` Viam module exposes Wyze cameras to a Viam machine.
 The LAN-local dashboard (camera video + a browsable history of uploaded
 motion-event images) now ships as a separate module, `cheukt:home:home-ui`.
 
-See [VIAM_MODULE_PLAN.md](VIAM_MODULE_PLAN.md) for the design and
-[MODULE_SPLIT_PLAN.md](MODULE_SPLIT_PLAN.md) for the module split.
+See [VIAM_MODULE.md](VIAM_MODULE.md) for the design (including the `cheukt:home`
+module split and remaining future work).
 
 ## Changes
 

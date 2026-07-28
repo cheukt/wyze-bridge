@@ -16,7 +16,7 @@ component consumes.
 
 Wyze credentials are read from an on-machine dotenv file referenced by
 `creds_file`, so secrets never enter the Viam cloud config. See
-[DOCS/VIAM_MODULE_PLAN.md](../../DOCS/VIAM_MODULE_PLAN.md) for the full design.
+[DOCS/VIAM_MODULE.md](../../DOCS/VIAM_MODULE.md) for the full design.
 
 ## Configuration
 
