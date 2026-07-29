@@ -1,6 +1,7 @@
 package wyzeapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -295,7 +296,7 @@ func TestClient_PostRaw(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{log: zerolog.Nop(), httpClient: srv.Client()}
-	_, err := c.postRaw(srv.URL+"/test", map[string]string{"content-type": "application/json"}, `{"key":"val"}`)
+	_, err := c.postRaw(context.Background(), srv.URL+"/test", map[string]string{"content-type": "application/json"}, `{"key":"val"}`)
 	if err != nil {
 		t.Fatalf("postRaw: %v", err)
 	}

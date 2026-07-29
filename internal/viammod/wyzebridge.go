@@ -134,7 +134,7 @@ func buildBridgeConfig(c *Config) *config.Config {
 	return &config.Config{
 		BridgeIP:        c.BridgeIP,
 		StateDir:        resolveStateDir(c.StateDir),
-		LogLevel:        parseLogLevel(c.LogLevel),
+		LogLevel:        config.ParseLogLevel(c.LogLevel),
 		ForceIOTCDetail: c.ForceIOTCDetail,
 		STUNServer:      stun,
 
@@ -154,8 +154,16 @@ func buildBridgeConfig(c *Config) *config.Config {
 		Quality:         "hd",
 		Audio:           true,
 		BridgePort:      5080,
-		GwellEnabled:    false,
-		CamOverrides:    make(map[string]config.CamOverride),
+
+		// The module targets TUTK cameras only. Gwell (OG-family) needs the
+		// gwell-proxy sidecar, and WebRTC/KVS (doorbell lineage) needs the
+		// bridge's /internal/wyze/webrtc shim HTTP server — neither of which
+		// the module runs. So the TUTK→WebRTC auto-fallback is deliberately
+		// left off (threshold 0 disables recordTUTKFailure promotion): there
+		// is no WebRTC path to promote to. See DOCS/VIAM_MODULE.md.
+		GwellEnabled:          false,
+		TUTKFallbackThreshold: 0,
+		CamOverrides:          make(map[string]config.CamOverride),
 	}
 }
 
@@ -194,18 +202,6 @@ func resolveStateDir(explicit string) string {
 	return "./local/config"
 }
 
-// parseLogLevel mirrors headless: unknown/empty -> info.
-func parseLogLevel(s string) zerolog.Level {
-	if s == "" {
-		return zerolog.InfoLevel
-	}
-	lvl, err := zerolog.ParseLevel(strings.ToLower(strings.TrimSpace(s)))
-	if err != nil {
-		return zerolog.InfoLevel
-	}
-	return lvl
-}
-
 // DoCommand is the discovery surface. Supported commands:
 //   - {"list_cameras": true}                                  -> camera list + rtsp URLs
 //   - {"get_events": true}                                    -> motion events in the last minute
@@ -217,7 +213,7 @@ func (s *service) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 	}
 
 	if v, ok := cmd["get_events"]; ok {
-		return s.getEvents(eventWindow(v))
+		return s.getEvents(ctx, eventWindow(v))
 	}
 
 	if v, ok := cmd["restart_camera"]; ok {
@@ -253,6 +249,11 @@ func (s *service) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 // timeout is ~5s, so allow headroom.
 const probeTimeout = 10 * time.Second
 
+// maxConcurrentProbes bounds how many cameras listCameras probes at once, so a
+// large fleet (or several overlapping list_cameras calls) doesn't fan out an
+// unbounded burst of forced go2rtc dials.
+const maxConcurrentProbes = 8
+
 // listCameras returns the camera list with loopback RTSP URLs. When probe is
 // true (the default) it actively verifies each camera by fetching a frame from
 // go2rtc — which forces the lazy source to dial the camera — and reports
@@ -264,15 +265,19 @@ func (s *service) listCameras(ctx context.Context, probe bool) map[string]interf
 	cams := s.camMgr.Cameras()
 	list := make([]interface{}, len(cams))
 
+	sem := make(chan struct{}, maxConcurrentProbes)
 	var wg sync.WaitGroup
 	for i, cam := range cams {
 		i, cam := i, cam
 		name := cam.Name()
+		// Snapshot once under the camera lock rather than reading cam.Info /
+		// cam.State directly — the discovery loop calls UpdateInfo concurrently.
+		snap := cam.Snapshot()
 		entry := map[string]interface{}{
 			"name":     name,
-			"nickname": cam.Info.Nickname,
-			"model":    cam.Info.Model,
-			"state":    cam.GetState().String(),
+			"nickname": snap.Info.Nickname,
+			"model":    snap.Info.Model,
+			"state":    snap.State.String(),
 		}
 		list[i] = entry
 
@@ -285,6 +290,8 @@ func (s *service) listCameras(ctx context.Context, probe bool) map[string]interf
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 			defer cancel()
 			if err := s.camMgr.ProbeStream(pctx, name); err != nil {
@@ -292,7 +299,7 @@ func (s *service) listCameras(ctx context.Context, probe bool) map[string]interf
 				// let a stale "streaming" state read as usable.
 				entry["ready"] = false
 				entry["error"] = err.Error()
-				if cam.GetState() == camera.StateStreaming {
+				if snap.State == camera.StateStreaming {
 					entry["state"] = "error"
 				}
 				return

@@ -23,6 +23,7 @@ type Manager struct {
 	apiURL     string
 	cmd        *exec.Cmd
 	ready      chan struct{}
+	exited     chan struct{} // closed by the monitor goroutine when cmd exits
 	mu         sync.Mutex
 	cancel     context.CancelFunc
 }
@@ -94,12 +95,19 @@ func (m *Manager) Start(ctx context.Context) error {
 	go m.relayOutput(bufio.NewScanner(stdout))
 	go m.relayOutput(bufio.NewScanner(stderr))
 
+	// exited lets Stop() block until the subprocess has actually gone away
+	// (and released its ports) before returning. Recreated per Start.
+	exited := make(chan struct{})
+	m.exited = exited
+	cmd := m.cmd
+
 	// Monitor process exit
 	go func() {
-		err := m.cmd.Wait()
+		err := cmd.Wait()
 		m.mu.Lock()
 		m.cmd = nil
 		m.mu.Unlock()
+		close(exited)
 		if err != nil && ctx.Err() == nil {
 			m.log.Error().Err(err).Msg("go2rtc exited unexpectedly")
 		} else {
@@ -110,18 +118,31 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully stops the go2rtc subprocess.
+// Stop gracefully stops the go2rtc subprocess and waits for it to exit, so a
+// caller that immediately restarts (e.g. a Viam Reconfigure spinning up a new
+// service instance) doesn't race the dying process still holding :1984 and
+// trip the port pre-flight in Start.
 func (m *Manager) Stop() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
 	}
-
+	exited := m.exited
+	running := m.cmd != nil
 	// Reset ready channel for potential restart
 	m.ready = make(chan struct{})
+	m.mu.Unlock()
+
+	// Wait outside the lock — the monitor goroutine needs m.mu to clear cmd
+	// before it closes exited.
+	if running && exited != nil {
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			m.log.Warn().Msg("go2rtc did not exit within 5s of stop")
+		}
+	}
 	return nil
 }
 

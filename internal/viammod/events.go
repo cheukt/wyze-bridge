@@ -1,7 +1,9 @@
 package viammod
 
 import (
+	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,13 +17,13 @@ const defaultEventWindow = 5 * time.Minute
 // eventLister is the slice of the Wyze API the events surface needs. *wyzeapi.Client
 // satisfies it; tests substitute a fake so get_events needs no real auth.
 type eventLister interface {
-	GetEventList(macs []string, beginTimeMS, endTimeMS int64) ([]map[string]interface{}, error)
+	GetEventList(ctx context.Context, macs []string, beginTimeMS, endTimeMS int64) ([]map[string]interface{}, error)
 }
 
 // getEvents fetches recent events across all known cameras within window and
 // returns them shaped, newest the API gives first. Resolves each event's
 // device_id (the camera MAC) back to the friendly name.
-func (s *service) getEvents(window time.Duration) (map[string]interface{}, error) {
+func (s *service) getEvents(ctx context.Context, window time.Duration) (map[string]interface{}, error) {
 	cams := s.camMgr.Cameras()
 	macs := make([]string, 0, len(cams))
 	byMAC := make(map[string]*camera.Camera, len(cams))
@@ -38,16 +40,14 @@ func (s *service) getEvents(window time.Duration) (map[string]interface{}, error
 	if len(macs) > 0 {
 		end := time.Now()
 		begin := end.Add(-window)
-		raw, err := s.api.GetEventList(macs, begin.UnixMilli(), end.UnixMilli())
+		raw, err := s.api.GetEventList(ctx, macs, begin.UnixMilli(), end.UnixMilli())
 		if err != nil {
 			return nil, fmt.Errorf("get_events: %w", err)
 		}
-		// Dump the raw event shape for troubleshooting (signed thumbnail URLs,
-		// AI tag_list contents, etc. that the metadata view drops).
 		for _, e := range raw {
+			// Dump the raw event shape for troubleshooting (signed thumbnail
+			// URLs, AI tag_list contents, etc. that the metadata view drops).
 			s.log.Debug().Interface("event", e).Msg("raw wyze event")
-		}
-		for _, e := range raw {
 			events = append(events, shapeEvent(e, byMAC))
 		}
 	}
@@ -164,6 +164,9 @@ func asInt(v interface{}) (int64, bool) {
 		return n, true
 	case int:
 		return int64(n), true
+	case string:
+		i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
+		return i, err == nil
 	default:
 		return 0, false
 	}

@@ -1,6 +1,7 @@
 package wyzeapi
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -283,7 +284,9 @@ func (c *Client) GetCameraStream(cam CameraInfo) (map[string]interface{}, error)
 	headers["authorization"] = c.auth.AccessToken
 
 	url := c.NewWyzeURL + "/v4/camera/get_streams"
-	resp, err := c.postRaw(url, headers, sorted)
+	// The shim handler that calls this doesn't thread its request context
+	// through; the 30s httpClient timeout bounds the call.
+	resp, err := c.postRaw(context.Background(), url, headers, sorted)
 	if err != nil {
 		return nil, fmt.Errorf("get_streams: %w", err)
 	}

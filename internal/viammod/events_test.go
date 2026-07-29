@@ -20,7 +20,7 @@ type fakeEventLister struct {
 	gotMS   [2]int64
 }
 
-func (f *fakeEventLister) GetEventList(macs []string, beginMS, endMS int64) ([]map[string]interface{}, error) {
+func (f *fakeEventLister) GetEventList(_ context.Context, macs []string, beginMS, endMS int64) ([]map[string]interface{}, error) {
 	f.gotMACs = macs
 	f.gotMS = [2]int64{beginMS, endMS}
 	return f.events, f.err
@@ -112,7 +112,7 @@ func TestGetEvents_resolvesCameraFromEventID(t *testing.T) {
 	}}
 	s := newEventService(t, api, camWithMAC("garage", "Garage", "80482CAA9F2F"))
 
-	out, err := s.getEvents(defaultEventWindow)
+	out, err := s.getEvents(context.Background(), defaultEventWindow)
 	if err != nil {
 		t.Fatalf("getEvents error: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestGetEvents_passesAllCameraMACs(t *testing.T) {
 		camWithMAC("noMAC", "NoMAC", ""), // skipped — no MAC
 	)
 
-	if _, err := s.getEvents(defaultEventWindow); err != nil {
+	if _, err := s.getEvents(context.Background(), defaultEventWindow); err != nil {
 		t.Fatalf("getEvents error: %v", err)
 	}
 	if len(api.gotMACs) != 2 {
@@ -155,7 +155,7 @@ func TestGetEvents_returnsAllEvents(t *testing.T) {
 	}}
 	s := newEventService(t, api, camWithMAC("cam", "Cam", "M"))
 
-	out, err := s.getEvents(defaultEventWindow)
+	out, err := s.getEvents(context.Background(), defaultEventWindow)
 	if err != nil {
 		t.Fatalf("getEvents error: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestGetEvents_noCamerasSkipsAPI(t *testing.T) {
 	api := &fakeEventLister{events: []map[string]interface{}{{"device_mac": "X"}}}
 	s := newEventService(t, api) // no cameras
 
-	out, err := s.getEvents(defaultEventWindow)
+	out, err := s.getEvents(context.Background(), defaultEventWindow)
 	if err != nil {
 		t.Fatalf("getEvents error: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestGetEvents_apiError(t *testing.T) {
 	api := &fakeEventLister{err: errors.New("boom")}
 	s := newEventService(t, api, camWithMAC("cam", "Cam", "M"))
 
-	if _, err := s.getEvents(defaultEventWindow); err == nil {
+	if _, err := s.getEvents(context.Background(), defaultEventWindow); err == nil {
 		t.Error("getEvents = nil error, want propagated API error")
 	}
 }

@@ -1,13 +1,12 @@
 package viammod
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
 
+	"github.com/IDisposable/docker-wyze-bridge/internal/envfile"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -26,7 +25,7 @@ func loadCredsFile(path string) (wyzeapi.Credentials, error) {
 	}
 	defer f.Close()
 
-	kv, err := parseDotenv(f)
+	kv, err := envfile.Parse(f)
 	if err != nil {
 		return wyzeapi.Credentials{}, fmt.Errorf("parse creds_file %q: %w", path, err)
 	}
@@ -61,32 +60,4 @@ func missingRequiredKeys(kv map[string]string) []string {
 	}
 	sort.Strings(missing)
 	return missing
-}
-
-// parseDotenv reads KEY=VALUE lines into a map. Blank lines and `#` comments
-// are skipped, an optional leading `export ` is stripped, and surrounding
-// single or double quotes are trimmed from values. Lines without `=` are
-// ignored. Matches the headless loadEnvFile parsing, minus the env mutation.
-func parseDotenv(r io.Reader) (map[string]string, error) {
-	kv := make(map[string]string)
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "export ")
-		key, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		val = strings.TrimSpace(val)
-		val = strings.Trim(val, `"'`)
-		kv[key] = val
-	}
-	return kv, scanner.Err()
 }
