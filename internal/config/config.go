@@ -214,7 +214,7 @@ func Load() (*Config, error) {
 		WebhookURLs: env("WEBHOOK_URLS", ""),
 
 		// Debugging
-		LogLevel:        ParseLogLevel(env("LOG_LEVEL", "info")),
+		LogLevel:        parseLogLevel(env("LOG_LEVEL", "info")),
 		ForceIOTCDetail: envBool("FORCE_IOTC_DETAIL", false),
 
 		// Gwell (IoTVideo) P2P sidecar for OG-family cameras
@@ -297,11 +297,8 @@ func normalizeCamName(name string) string {
 	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(name), " ", "_"))
 }
 
-// ParseLogLevel maps a log-level name to a zerolog.Level, defaulting to
-// InfoLevel for empty or unrecognized input. Shared by the full bridge, the
-// wyze-headless command, and the Viam module.
-func ParseLogLevel(s string) zerolog.Level {
-	switch strings.ToLower(strings.TrimSpace(s)) {
+func parseLogLevel(s string) zerolog.Level {
+	switch strings.ToLower(s) {
 	case "trace":
 		return zerolog.TraceLevel
 	case "debug":
@@ -315,4 +312,12 @@ func ParseLogLevel(s string) zerolog.Level {
 	default:
 		return zerolog.InfoLevel
 	}
+}
+
+// ParseLogLevel maps a log-level name to a zerolog.Level, defaulting to
+// InfoLevel for empty or unrecognized input. It is an exported wrapper over the
+// internal parser (additionally trimming surrounding whitespace) for callers
+// outside this package — the wyze-headless command and the Viam module.
+func ParseLogLevel(s string) zerolog.Level {
+	return parseLogLevel(strings.TrimSpace(s))
 }
