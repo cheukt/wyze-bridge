@@ -9,10 +9,15 @@
 /wyze-bridge
 /wyze-headless
 /gwell-proxy
+/catui-dev
 *.exe
 *.test
 *.prof
 vendor/
+
+# Viam module build artifacts
+/bin/
+/module.tar.gz
 
 # Docker
 docker-compose.override.yml
@@ -22,6 +27,8 @@ docker-compose.override.yml
 **/totp
 **/tokens/
 .env.dev
+.env.viam
+wyze.env
 test_env.list
 
 # Runtime

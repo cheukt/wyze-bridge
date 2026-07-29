@@ -43,6 +43,7 @@ type Manager struct {
 	// onProtocolFallback fires the first time a camera is auto-promoted
 	// from TUTK to WebRTC after crossing the fallback threshold.
 	onProtocolFallback func(camName string, oldProtocol, newProtocol string, failStreak int)
+	healthProbe        atomic.Bool // when set, connect/health actively verify media
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a
@@ -65,10 +66,11 @@ func NewManager(
 		cfg: cfg,
 		api: api,
 		filter: &Filter{
-			Names:  cfg.FilterNames,
-			Models: cfg.FilterModels,
-			MACs:   cfg.FilterMACs,
-			Block:  cfg.FilterBlocks,
+			Names:      cfg.FilterNames,
+			Models:     cfg.FilterModels,
+			MACs:       cfg.FilterMACs,
+			Block:      cfg.FilterBlocks,
+			AllowEmpty: cfg.FilterAllowEmpty,
 		},
 		cameras:         make(map[string]*Camera),
 		chronicReported: make(map[string]bool),
@@ -141,6 +143,59 @@ func (m *Manager) InjectCamera(name string, cam *Camera) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cameras[name] = cam
+}
+
+// SetHealthProbe enables active liveness verification. When enabled,
+// connectCamera only reports StateStreaming after a successful media probe
+// (no optimistic "streaming"), and HealthCheck actively probes idle streams
+// instead of trusting go2rtc's producer count. Off by default so the full
+// bridge's behavior is unchanged; the Viam module turns it on.
+func (m *Manager) SetHealthProbe(enabled bool) {
+	m.healthProbe.Store(enabled)
+}
+
+// healthProbeTimeout bounds a single liveness probe: go2rtc must dial the
+// camera (sources connect lazily) and decode a keyframe; its own discovery
+// timeout is ~5s, so allow headroom.
+const healthProbeTimeout = 10 * time.Second
+
+// verifyLive runs a bounded media probe for a camera. nil means it produced a
+// frame; an error carries go2rtc's reason (e.g. "discovery timeout").
+func (m *Manager) verifyLive(ctx context.Context, cam *Camera) error {
+	pctx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+	defer cancel()
+	return m.ProbeStream(pctx, cam.Name())
+}
+
+// hasLiveProducer reports whether any producer is actually carrying media
+// tracks (go2rtc populates Medias only once a source is connected and
+// producing). Lets HealthCheck skip a forced dial for streams that something
+// is already consuming.
+func hasLiveProducer(info *go2rtcmgr.StreamInfo) bool {
+	for _, p := range info.Producers {
+		if len(p.Medias) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ProbeStream actively verifies that a camera is producing media by requesting
+// a frame from go2rtc, which forces the (lazily-connected) source to dial the
+// camera. Returns nil if a frame came back, an error otherwise. This is a true
+// liveness check: unlike a Producers-count check, a registered-but-unreachable
+// source still lists a producer, so only an actual frame fetch proves the
+// camera streams. The error carries go2rtc's reason (e.g. "discovery timeout").
+//
+// It probes via /api/frame.mp4 (codec copy, no ffmpeg) rather than the JPEG
+// snapshot endpoint so the slim Viam module bundle — which ships go2rtc but no
+// ffmpeg binary — can run liveness checks without an "ffmpeg not found" error.
+func (m *Manager) ProbeStream(ctx context.Context, name string) error {
+	go2rtc := m.go2rtcClient()
+	if go2rtc == nil {
+		return fmt.Errorf("go2rtc API not attached")
+	}
+	return go2rtc.ProbeFrame(ctx, name)
 }
 
 // Discover fetches cameras from the Wyze API and adds them.
@@ -272,7 +327,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	streamURL, protocol := m.streamSourceFor(cam)
 	snap := cam.Snapshot()
 
-	m.log.Info().
+	m.log.Debug().
 		Str("cam", cam.Name()).
 		Str("ip", snap.Info.LanIP).
 		Str("model", snap.Info.ModelName()).
@@ -306,6 +361,24 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		m.maybeReportChronic(cam.Name(), errors)
 		m.recordTUTKFailure(cam, protocol)
 		return
+	}
+
+	// With health probing on, don't declare Streaming until we've verified
+	// go2rtc actually pulls media — AddStream only registers the stream; the
+	// source dials lazily and may fail (e.g. unreachable camera). Gwell cams
+	// are publish-only (proxy-fed) and never probed. An empty source URL is a
+	// publish-only slot too.
+	if m.healthProbe.Load() && streamURL != "" && !snap.Info.IsGwell() {
+		if err := m.verifyLive(ctx, cam); err != nil {
+			backoff := cam.IncrementError()
+			m.log.Debug().Err(err).
+				Str("cam", cam.Name()).
+				Str("protocol", protocol).
+				Dur("backoff", backoff).
+				Int("errors", cam.GetErrorCount()).
+				Msg("connected to go2rtc but no media — marking errored")
+			return
+		}
 	}
 
 	m.log.Info().
@@ -349,6 +422,9 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 	}
 	m.mu.RUnlock()
 
+	probe := m.healthProbe.Load()
+
+	var toProbe []*Camera
 	for _, cam := range cams {
 		if cam.GetState() != StateStreaming {
 			continue
@@ -369,30 +445,68 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 		}
 
 		info, ok := streams[cam.Name()]
-		if !ok || len(info.Producers) == 0 {
-			// Route through StateError with backoff so reconnectErrored's
-			// 10s ticker picks it up. Marking StateOffline used to leave
-			// the camera stuck until the next Discover refresh — reconnect
-			// only handles StateError, not StateOffline.
-			oldState := cam.GetState()
-			backoff := cam.IncrementError()
-			m.log.Warn().
-				Str("cam", cam.Name()).
-				Dur("backoff", backoff).
-				Msg("stream lost, will retry")
-			if m.onChange != nil && oldState != StateError {
-				m.onChange(cam, oldState, StateError)
+		if !probe {
+			// Legacy passive check (full bridge default): a registered
+			// producer is treated as healthy. Unreliable for lazy TUTK
+			// sources, but unchanged behavior when probing is off.
+			if !ok || len(info.Producers) == 0 {
+				// Route through StateError with backoff so reconnectErrored's
+				// 10s ticker picks it up. Marking StateOffline used to leave
+				// the camera stuck until the next Discover refresh — reconnect
+				// only handles StateError, not StateOffline.
+				oldState := cam.GetState()
+				backoff := cam.IncrementError()
+				m.log.Warn().
+					Str("cam", cam.Name()).
+					Dur("backoff", backoff).
+					Msg("stream lost, will retry")
+				if m.onChange != nil && oldState != StateError {
+					m.onChange(cam, oldState, StateError)
+				}
+				m.maybeReportChronic(cam.Name(), cam.GetErrorCount())
+				// A stream that reached Streaming and then went 0-producers
+				// is a TUTK-path failure signal for HL_CAM4-class regressions
+				// where TUTK dial appears to succeed but the P2P session
+				// never delivers frames. The current-protocol lookup is
+				// per-call (streamSourceFor is idempotent).
+				_, protocol := m.streamSourceFor(cam)
+				m.recordTUTKFailure(cam, protocol)
 			}
-			m.maybeReportChronic(cam.Name(), cam.GetErrorCount())
-			// A stream that reached Streaming and then went 0-producers
-			// is a TUTK-path failure signal for HL_CAM4-class regressions
-			// where TUTK dial appears to succeed but the P2P session
-			// never delivers frames. The current-protocol lookup is
-			// per-call (streamSourceFor is idempotent).
-			_, protocol := m.streamSourceFor(cam)
-			m.recordTUTKFailure(cam, protocol)
+			continue
 		}
+
+		// Probe mode: if a producer is already carrying media (something is
+		// consuming the stream), it's provably live — skip the forced dial.
+		if ok && hasLiveProducer(info) {
+			continue
+		}
+		// Idle or ambiguous: verify by actually pulling a frame.
+		toProbe = append(toProbe, cam)
 	}
+
+	if len(toProbe) == 0 {
+		return
+	}
+
+	var wg sync.WaitGroup
+	for _, cam := range toProbe {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(c *Camera) {
+			defer wg.Done()
+			if err := m.verifyLive(ctx, c); err != nil {
+				backoff := c.IncrementError()
+				m.log.Warn().Err(err).
+					Str("cam", c.Name()).
+					Dur("backoff", backoff).
+					Int("errors", c.GetErrorCount()).
+					Msg("health probe failed — marking errored")
+			}
+		}(cam)
+	}
+	wg.Wait()
 }
 
 // RunDiscoveryLoop runs the discovery + connect + health check loop.

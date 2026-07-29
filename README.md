@@ -508,6 +508,8 @@ go test ./...                     # run tests
 go build -o wyze-bridge ./cmd/wyze-bridge
 docker compose up --build         # Docker build + run
 ./cycle.sh                        # local dev cycle with .env.dev
+make module.tar.gz                # build the Viam module bundle
+make reload                       # cloud hot-reload the module to a machine part (.env.viam)
 ```
 
 See [DEVELOPER.md](DEVELOPER.md) for local dev / devcontainer setup.

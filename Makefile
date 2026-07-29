@@ -1,13 +1,47 @@
 # Pinned to match docker/Dockerfile's GO2RTC_VERSION.
 GO2RTC_VERSION ?= 1.9.14
 
-.PHONY: build run
+VERSION ?= dev
+
+.PHONY: build run module module.tar.gz clean-module reload
 
 build:
 	go build -o wyze-headless ./cmd/wyze-headless
 
 run: go2rtc
 	./wyze-headless
+
+# ── Viam module ──────────────────────────────────────────────────────────────
+# Build the module binary. CGO-free for a portable, statically-linked entrypoint.
+# The `no_cgo` tag drops gostream's cgo-only mediadevices audio driver (pulled in
+# transitively by rdk/components/camera), which otherwise fails to link under
+# CGO_ENABLED=0 with "undefined: malgo.AllocatedContext".
+module: bin/viam-module
+
+bin/viam-module:
+	CGO_ENABLED=0 go build -tags no_cgo -ldflags="-s -w -X github.com/IDisposable/docker-wyze-bridge/internal/viammod.Version=$(VERSION)" \
+		-o bin/viam-module ./cmd/viam-module
+
+# Bundle the module entrypoint + go2rtc into module.tar.gz.
+# go2rtc lives in bin/ next to the entrypoint so findGo2RTCBinary() locates it
+# via os.Executable(). Built natively — Viam cloud build runs this on the
+# target arch, so no cross-compilation is needed.
+module.tar.gz: bin/viam-module go2rtc
+	cp ./go2rtc bin/go2rtc
+	chmod +x bin/viam-module bin/go2rtc
+	tar -czf module.tar.gz bin/viam-module bin/go2rtc meta.json
+
+clean-module:
+	rm -rf bin module.tar.gz
+
+# Cloud hot-reload the module to a running machine part. The viam CLI runs
+# meta.json's build step and restarts the module on the part. Part id comes
+# from .env.viam (gitignored — copy .env.viam.example).
+reload:
+	@[ -f .env.viam ] || { echo "missing .env.viam — copy .env.viam.example and set VIAM_PART_ID" >&2; exit 1; }
+	@. ./.env.viam; \
+	[ -n "$$VIAM_PART_ID" ] || { echo "VIAM_PART_ID not set in .env.viam" >&2; exit 1; }; \
+	viam module reload --part-id $$VIAM_PART_ID
 
 # Download the pinned go2rtc binary for the local platform, but only if
 # ./go2rtc is missing (it's a file target, so make skips it once present).

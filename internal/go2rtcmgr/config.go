@@ -75,6 +75,7 @@ type ConfigBuilder struct {
 	logLevel   string
 	stunServer string
 	wbIP       string
+	rtspPort   int // 0 = default 8554
 	streams    []StreamEntry
 	streamAuth []StreamAuthEntry
 }
@@ -86,6 +87,12 @@ func NewConfigBuilder(logLevel, stunServer, wbIP string) *ConfigBuilder {
 		stunServer: stunServer,
 		wbIP:       wbIP,
 	}
+}
+
+// SetRTSPPort overrides the go2rtc RTSP listen port. A zero or negative port
+// leaves the default (8554) in place.
+func (b *ConfigBuilder) SetRTSPPort(port int) {
+	b.rtspPort = port
 }
 
 // AddStream adds a camera stream to the config.
@@ -141,6 +148,15 @@ func ParseStreamAuth(raw string) []StreamAuthEntry {
 	return entries
 }
 
+// rtspListen returns the go2rtc RTSP listen address for a port, defaulting to
+// :8554 when port is zero or negative.
+func rtspListen(port int) string {
+	if port <= 0 {
+		return ":8554"
+	}
+	return fmt.Sprintf(":%d", port)
+}
+
 // Build generates the Go2RTCConfig struct.
 func (b *ConfigBuilder) Build() *Go2RTCConfig {
 	cfg := &Go2RTCConfig{
@@ -149,7 +165,7 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 			Listen: ":1984",
 			Origin: "*", // needed for bridge WebUI on :5080 to use WebRTC player
 		},
-		RTSP: RTSPConfig{Listen: ":8554"},
+		RTSP: RTSPConfig{Listen: rtspListen(b.rtspPort)},
 		WebRTC: WebRTCConfig{
 			Listen: ":8889",
 		},

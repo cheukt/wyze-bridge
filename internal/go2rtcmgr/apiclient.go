@@ -204,5 +204,62 @@ func (c *APIClient) GetSnapshot(ctx context.Context, name string) ([]byte, error
 		return nil, fmt.Errorf("get snapshot %q: %d %s", name, resp.StatusCode, string(body))
 	}
 
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("get snapshot %q: read body: %w", name, err)
+	}
+
+	// go2rtc answers 200 with an empty (Content-Length: 0) body when the
+	// lazy source is registered but no media flows — it dials the camera,
+	// times out waiting for a frame, and returns nothing instead of an
+	// error. Treat that (and any non-JPEG payload) as a failed snapshot so
+	// liveness probes don't read a dead camera as "streaming/ready" and the
+	// snapshot/webui paths don't persist or serve a 0-byte file.
+	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
+		return nil, fmt.Errorf("get snapshot %q: no frame (%d-byte body, not a JPEG)", name, len(data))
+	}
+
+	return data, nil
+}
+
+// ProbeFrame forces a lazy source to dial and returns nil if a media frame
+// came back. It hits go2rtc's /api/frame.mp4, which muxes the camera's H264/
+// H265 with codec copy — no ffmpeg dependency, unlike GetSnapshot's JPEG
+// encode. That makes it the liveness probe of choice for the slim Viam module
+// bundle, which ships go2rtc without an ffmpeg binary on PATH. A frame proves
+// the camera actually streams: a registered-but-unreachable source still lists
+// a producer, so a Producers-count check alone would read it as live.
+func (c *APIClient) ProbeFrame(ctx context.Context, name string) error {
+	u := fmt.Sprintf("%s/api/frame.mp4?src=%s", c.baseURL, url.QueryEscape(name))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("probe frame %q: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("probe frame %q: %d %s", name, resp.StatusCode, string(body))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("probe frame %q: read body: %w", name, err)
+	}
+
+	// Like the JPEG path, go2rtc answers 200 with an empty body when the lazy
+	// source is registered but never produces a frame (dial then discovery
+	// timeout). A real MP4 opens with an 'ftyp' box (4-byte size, then the
+	// type tag at offset 4); anything else means no media flowed.
+	if len(data) < 8 || string(data[4:8]) != "ftyp" {
+		return fmt.Errorf("probe frame %q: no frame (%d-byte body, not an MP4)", name, len(data))
+	}
+
+	return nil
 }

@@ -1,6 +1,7 @@
 package wyzeapi
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -24,8 +25,10 @@ func (c *Client) RunAction(cam CameraInfo, action string) error {
 	return nil
 }
 
-// GetEventList fetches recent events for the given MAC addresses.
-func (c *Client) GetEventList(macs []string, beginTimeMS, endTimeMS int64) ([]map[string]interface{}, error) {
+// GetEventList fetches recent events for the given MAC addresses. ctx cancels
+// the HTTP round-trip (the caller's poll loop uses it so a slow Wyze response
+// doesn't outlive a Close/Reconfigure).
+func (c *Client) GetEventList(ctx context.Context, macs []string, beginTimeMS, endTimeMS int64) ([]map[string]interface{}, error) {
 	if err := c.EnsureAuth(); err != nil {
 		return nil, err
 	}
@@ -53,7 +56,7 @@ func (c *Client) GetEventList(macs []string, beginTimeMS, endTimeMS int64) ([]ma
 	sorted := sortDict(payload)
 	headers := c.signPayloadHeaders("9319141212m2ik", sorted)
 
-	resp, err := c.postRaw(c.CloudURL+"/v4/device/get_event_list", headers, sorted)
+	resp, err := c.postRaw(ctx, c.CloudURL+"/v4/device/get_event_list", headers, sorted)
 	if err != nil {
 		return nil, fmt.Errorf("get_event_list: %w", err)
 	}

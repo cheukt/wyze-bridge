@@ -40,8 +40,8 @@ func mockGo2RTCServer(t *testing.T) (*httptest.Server, *go2rtcmgr.APIClient) {
 			name := r.URL.Query().Get("name")
 			delete(streams, name)
 			w.WriteHeader(200)
-		case r.URL.Path == "/api/frame.jpeg":
-			w.Write([]byte{0xFF, 0xD8})
+		case r.URL.Path == "/api/frame.mp4":
+			w.Write([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p'}) // MP4 ftyp box
 		default:
 			w.WriteHeader(404)
 		}

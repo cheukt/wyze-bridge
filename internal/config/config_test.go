@@ -126,9 +126,9 @@ func TestParseLogLevel(t *testing.T) {
 		{"garbage", "info"},
 	}
 	for _, tt := range tests {
-		got := parseLogLevel(tt.in)
+		got := ParseLogLevel(tt.in)
 		if got.String() != tt.want {
-			t.Errorf("parseLogLevel(%q) = %q, want %q", tt.in, got.String(), tt.want)
+			t.Errorf("ParseLogLevel(%q) = %q, want %q", tt.in, got.String(), tt.want)
 		}
 	}
 }

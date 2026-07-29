@@ -2,6 +2,7 @@ package wyzeapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,8 +123,8 @@ func (c *Client) postJSON(url string, headers map[string]string, body map[string
 }
 
 // postRaw sends a raw string body POST request and validates the response.
-func (c *Client) postRaw(url string, headers map[string]string, body string) (map[string]interface{}, error) {
-	req, err := http.NewRequest("POST", url, bytes.NewReader([]byte(body)))
+func (c *Client) postRaw(ctx context.Context, url string, headers map[string]string, body string) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader([]byte(body)))
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}

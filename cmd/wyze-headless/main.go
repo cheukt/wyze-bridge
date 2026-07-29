@@ -25,6 +25,7 @@ import (
 
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
+	"github.com/IDisposable/docker-wyze-bridge/internal/envfile"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
@@ -115,7 +116,7 @@ func loadConfig() (*config.Config, error) {
 		// Env-driven knobs (testing convenience)
 		BridgeIP:        os.Getenv("BRIDGE_IP"),
 		StateDir:        envOr("STATE_DIR", "./local/config"),
-		LogLevel:        parseLogLevel(os.Getenv("LOG_LEVEL")),
+		LogLevel:        config.ParseLogLevel(os.Getenv("LOG_LEVEL")),
 		ForceIOTCDetail: envBool("FORCE_IOTC_DETAIL"),
 
 		// Literals for the TUTK + embedded-go2rtc core.
@@ -157,24 +158,13 @@ func loadEnvFile(path string, explicit bool) error {
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "export ")
-		key, val, ok := strings.Cut(line, "=")
+		key, val, ok := envfile.ParseLine(scanner.Text())
 		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		if key == "" {
 			continue
 		}
 		if _, set := os.LookupEnv(key); set {
 			continue // real env wins
 		}
-		val = strings.TrimSpace(val)
-		val = strings.Trim(val, `"'`) // strip surrounding quotes
 		os.Setenv(key, val)
 	}
 	return scanner.Err()
@@ -193,17 +183,6 @@ func envBool(key string) bool {
 		return true
 	}
 	return false
-}
-
-func parseLogLevel(s string) zerolog.Level {
-	if s == "" {
-		return zerolog.InfoLevel
-	}
-	lvl, err := zerolog.ParseLevel(strings.ToLower(strings.TrimSpace(s)))
-	if err != nil {
-		return zerolog.InfoLevel
-	}
-	return lvl
 }
 
 func initLogging(cfg *config.Config) {

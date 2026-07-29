@@ -48,10 +48,11 @@ type Config struct {
 	MQTTDiscoveryTopic string // HA discovery prefix
 
 	// Camera Filtering
-	FilterNames  []string
-	FilterModels []string
-	FilterMACs   []string
-	FilterBlocks bool
+	FilterNames      []string
+	FilterModels     []string
+	FilterMACs       []string
+	FilterBlocks     bool
+	FilterAllowEmpty bool // if true, an explicit filter matching nothing yields no cameras (no fallback-to-all)
 
 	// Camera Defaults
 	Quality     string
@@ -311,4 +312,12 @@ func parseLogLevel(s string) zerolog.Level {
 	default:
 		return zerolog.InfoLevel
 	}
+}
+
+// ParseLogLevel maps a log-level name to a zerolog.Level, defaulting to
+// InfoLevel for empty or unrecognized input. It is an exported wrapper over the
+// internal parser (additionally trimming surrounding whitespace) for callers
+// outside this package — the wyze-headless command and the Viam module.
+func ParseLogLevel(s string) zerolog.Level {
+	return parseLogLevel(strings.TrimSpace(s))
 }
