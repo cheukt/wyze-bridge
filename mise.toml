@@ -1,0 +1,31 @@
+[tools]
+go = "1.26.4"
+golangci-lint = "2.12.2"
+
+[tasks.build-go]
+alias = "build"
+description = "Build the Viam module binary (CGO-free, statically linked)."
+# VERSION defaults to "dev"; override with `VERSION=v1.2.3 mise run build`.
+run = """
+CGO_ENABLED=0 go build -tags no_cgo \
+  -ldflags="-s -w -X github.com/IDisposable/docker-wyze-bridge/internal/viammod.Version=${VERSION:-dev}" \
+  -o bin/viam-module ./cmd/viam-module
+"""
+
+[tasks.lint-go]
+alias = "lint"
+description = "Lint only the folders added on top of upstream/main."
+# Scoped to our own packages; inherited upstream code is intentionally left
+# unlinted. Add a path here when introducing a new top-level package of our own.
+run = """
+golangci-lint run \
+  ./cmd/viam-module/... \
+  ./cmd/wyze-headless/... \
+  ./internal/envfile/... \
+  ./internal/viammod/...
+"""
+
+[tasks.test-go]
+alias = "test"
+description = "Run the test suite."
+run = "go test ./..."

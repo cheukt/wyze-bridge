@@ -44,12 +44,6 @@ func (f *fakeManager) callCount() int {
 	return f.calls
 }
 
-func (f *fakeManager) lastCommand() map[string]interface{} {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.lastCmd
-}
-
 func newFakeManager(resp map[string]interface{}, err error) *fakeManager {
 	return &fakeManager{Named: generic.Named("mgr").AsNamed(), resp: resp, err: err}
 }

@@ -163,11 +163,11 @@ func newConditionalCamera(
 		return nil, err
 	}
 
-	cam, err := camera.FromDependencies(deps, newConf.Camera)
+	cam, err := camera.FromProvider(deps, newConf.Camera)
 	if err != nil {
 		return nil, err
 	}
-	mgr, err := resource.FromDependencies[resource.Resource](deps, generic.Named(newConf.Manager))
+	mgr, err := resource.FromProvider[resource.Resource](deps, generic.Named(newConf.Manager))
 	if err != nil {
 		return nil, err
 	}

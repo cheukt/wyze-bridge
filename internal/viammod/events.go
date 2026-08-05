@@ -148,7 +148,10 @@ func eventMAC(e map[string]interface{}) string {
 // isHex reports whether s is all hexadecimal digits.
 func isHex(s string) bool {
 	for _, r := range s {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+		isDigit := r >= '0' && r <= '9'
+		isLower := r >= 'a' && r <= 'f'
+		isUpper := r >= 'A' && r <= 'F'
+		if !isDigit && !isLower && !isUpper {
 			return false
 		}
 	}

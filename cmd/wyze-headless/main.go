@@ -154,7 +154,7 @@ func loadEnvFile(path string, explicit bool) error {
 		}
 		return fmt.Errorf("open env file %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -165,7 +165,9 @@ func loadEnvFile(path string, explicit bool) error {
 		if _, set := os.LookupEnv(key); set {
 			continue // real env wins
 		}
-		os.Setenv(key, val)
+		if err := os.Setenv(key, val); err != nil {
+			return fmt.Errorf("set env %q: %w", key, err)
+		}
 	}
 	return scanner.Err()
 }

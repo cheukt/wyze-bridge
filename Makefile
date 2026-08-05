@@ -18,9 +18,10 @@ run: go2rtc
 # CGO_ENABLED=0 with "undefined: malgo.AllocatedContext".
 module: bin/viam-module
 
+# Delegates to mise, which pins the Go toolchain (see mise.toml). VERSION is
+# passed through; mise's build task defaults it to "dev".
 bin/viam-module:
-	CGO_ENABLED=0 go build -tags no_cgo -ldflags="-s -w -X github.com/IDisposable/docker-wyze-bridge/internal/viammod.Version=$(VERSION)" \
-		-o bin/viam-module ./cmd/viam-module
+	VERSION=$(VERSION) mise run build
 
 # Bundle the module entrypoint + go2rtc into module.tar.gz.
 # go2rtc lives in bin/ next to the entrypoint so findGo2RTCBinary() locates it
@@ -60,3 +61,10 @@ go2rtc:
 	esac; \
 	chmod +x ./go2rtc; \
 	./go2rtc --version
+
+test:
+	mise run test
+
+# Format in place, then lint. mise pins golangci-lint v2 (see mise.toml).
+lint:
+	mise run lint

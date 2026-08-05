@@ -23,7 +23,7 @@ func loadCredsFile(path string) (wyzeapi.Credentials, error) {
 	if err != nil {
 		return wyzeapi.Credentials{}, fmt.Errorf("open creds_file %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	kv, err := envfile.Parse(f)
 	if err != nil {

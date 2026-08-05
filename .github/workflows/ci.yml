@@ -1,0 +1,14 @@
+name: CI
+
+# PRs only. On pushes to main, deploy.yml runs the same checks.yml as its
+# publish gate, so running them here too would just duplicate the work.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
