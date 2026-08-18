@@ -53,6 +53,33 @@ Trade-off accepted: a panic in bridge code lands in viam-server's module process
 module. In exchange: one binary, no child-process supervision, direct camera
 state.
 
+### Keeping go2rtc alive (supervised from viammod, not go2rtcmgr)
+
+`go2rtcmgr.Manager` starts go2rtc once and reaps it; nothing respawns a crash.
+The natural fix — a supervisor loop inside `go2rtcmgr` watching the process exit
+channel — would edit an upstream-owned file, so
+`internal/viammod/go2rtc_supervisor.go` does it from outside, on exported API only:
+
+- **Detection:** poll `IsHealthy` every 5s; restart after 2 consecutive misses.
+  Slower than watching the process exit, but it also catches an alive-but-wedged
+  go2rtc that an exit watcher misses.
+- **Restart:** `Stop` the old process (freeing :1984 before the next port
+  pre-flight), then `Start` + `WaitReady` on a **fresh** `Manager` from
+  `newGo2RTCManager`. Reusing the old one is a dead end: its `cmd` stays non-nil
+  if exec fails, so every later `Start` answers "already running", and its ready
+  channel is already closed. Failures back off 2s→60s and retry; a process that
+  starts but never answers is stopped so it doesn't hold the ports.
+- **Re-registration:** a fresh go2rtc only knows the streams in its YAML — every
+  TUTK stream was registered at runtime over the HTTP API. Each restart therefore
+  fans out `camMgr.RestartStream` per camera (`ConnectAll` would skip cameras
+  still believing they stream). Parallel, since with the health probe on each
+  reconnect waits for a real frame.
+- **Shutdown:** `Close` cancels `serviceCtx` *before* `Stop`, so a deliberate
+  teardown ends the loop instead of reading as a crash.
+
+The full bridge (`cmd/wyze-bridge`, `cmd/wyze-headless`) keeps upstream behavior:
+a crashed go2rtc stays down. Fixing that belongs in an upstream PR.
+
 ### No Reconfigure (`AlwaysRebuild`)
 
 The service embeds `resource.AlwaysRebuild`. On any config change viam-server

@@ -21,7 +21,6 @@ import (
 
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
-	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -52,7 +51,7 @@ type service struct {
 	resource.AlwaysRebuild
 
 	camMgr   *camera.Manager
-	go2rtcM  *go2rtcmgr.Manager
+	go2rtcS  *go2rtcSupervisor
 	api      eventLister
 	log      zerolog.Logger
 	rtspPort int
@@ -99,13 +98,23 @@ func newService(
 	// stream registration (go2rtc connects sources lazily).
 	camMgr.SetHealthProbe(true)
 
-	go2rtcAPI, go2rtcM, err := setupGo2RTC(serviceCtx, bridgeCfg, rtspPort, zl.With().Str("c", "go2rtc").Logger())
+	go2rtcLog := zl.With().Str("c", "go2rtc").Logger()
+	go2rtcAPI, go2rtcM, err := setupGo2RTC(serviceCtx, bridgeCfg, rtspPort, go2rtcLog)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
 
 	camMgr.SetGo2RTCAPI(go2rtcAPI)
+
+	// Keep go2rtc alive for the service's lifetime.
+	supLog := zl.With().Str("c", "go2rtc-sup").Logger()
+	go2rtcS := newGo2RTCSupervisor(go2rtcM,
+		func() go2rtcProcess { return newGo2RTCManager(bridgeCfg, go2rtcLog) },
+		func(ctx context.Context) { reregisterStreams(ctx, camMgr, supLog) },
+		supLog)
+	go go2rtcS.Run(serviceCtx)
+
 	go camMgr.RunDiscoveryLoop(serviceCtx)
 
 	logger.Infow("wyze-bridge manager started",
@@ -114,7 +123,7 @@ func newService(
 	return &service{
 		Named:    conf.ResourceName().AsNamed(),
 		camMgr:   camMgr,
-		go2rtcM:  go2rtcM,
+		go2rtcS:  go2rtcS,
 		api:      apiClient,
 		log:      zl.With().Str("c", "viammod").Logger(),
 		rtspPort: rtspPort,
@@ -338,8 +347,9 @@ func (s *service) Close(ctx context.Context) error {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		if s.go2rtcM != nil {
-			_ = s.go2rtcM.Stop()
+		// After cancel, so the supervisor is gone and won't restart it.
+		if s.go2rtcS != nil {
+			_ = s.go2rtcS.Stop()
 		}
 	})
 	return nil

@@ -25,7 +25,7 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, rtspPort int, log zero
 	configBuilder := go2rtcmgr.NewConfigBuilder(logLevel, cfg.STUNServer, cfg.BridgeIP)
 	configBuilder.SetRTSPPort(rtspPort)
 
-	go2rtcConfigPath := filepath.Join(cfg.StateDir, "go2rtc.yaml")
+	go2rtcConfigPath := go2rtcConfigFile(cfg)
 	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("create state dir %q: %w", cfg.StateDir, err)
 	}
@@ -33,8 +33,7 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, rtspPort int, log zero
 		return nil, nil, fmt.Errorf("write go2rtc config: %w", err)
 	}
 
-	go2rtcBinary := findGo2RTCBinary()
-	mgr := go2rtcmgr.NewManager(go2rtcBinary, go2rtcConfigPath, log)
+	mgr := newGo2RTCManager(cfg, log)
 
 	if err := mgr.Start(ctx); err != nil {
 		return nil, nil, fmt.Errorf("start go2rtc: %w", err)
@@ -50,6 +49,18 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, rtspPort int, log zero
 
 	api := go2rtcmgr.NewAPIClient(mgr.APIURL(), log)
 	return api, mgr, nil
+}
+
+// newGo2RTCManager builds a manager over the config setupGo2RTC wrote. The
+// supervisor calls this for every restart: a Manager whose exec.Cmd.Start failed
+// keeps a non-nil cmd forever and answers "already running" from then on, and
+// nothing exported clears it.
+func newGo2RTCManager(cfg *config.Config, log zerolog.Logger) *go2rtcmgr.Manager {
+	return go2rtcmgr.NewManager(findGo2RTCBinary(), go2rtcConfigFile(cfg), log)
+}
+
+func go2rtcConfigFile(cfg *config.Config) string {
+	return filepath.Join(cfg.StateDir, "go2rtc.yaml")
 }
 
 // findGo2RTCBinary locates the bundled go2rtc binary. It first probes the
