@@ -99,7 +99,7 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 			P2PID:       getString(params, "p2p_id"),
 			DTLS:        getInt(params, "dtls") != 0,
 			ParentDTLS:  getInt(params, "main_device_dtls") != 0,
-			Online:      true,
+			Online:      connStateOnline(dev),
 		}
 
 		// Extract thumbnail
@@ -130,6 +130,7 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 			Str("product_type", productType).
 			Bool("dtls", cam.DTLS).
 			Str("fw", cam.FWVersion).
+			Bool("online", cam.Online).
 			Msg("discovered device")
 
 		// Skip devices missing required P2P fields. The field set is
