@@ -112,5 +112,39 @@ Minimal: zerolog, paho.mqtt.golang, go-sunrise, go-isatty, yaml.v3. No web frame
 
 ## Git
 
-- `origin` — IDisposable/docker-wyze-bridge
-- `upstream` — mrlt8/docker-wyze-bridge
+- `origin` — cheukt/wyze-bridge (this fork)
+- `upstream` — IDisposable/docker-wyze-bridge (the Go rewrite we track and re-pull from)
+
+## Keeping the upstream diff small
+
+Everything outside `internal/viammod/`, `cmd/viam-module/`, and `cmd/wyze-headless/` is
+upstream-owned. We re-pull from `upstream`, so **minimizing our diff in upstream-owned
+files is a design goal**, not a nicety — every line we change there is a merge conflict
+to re-resolve, forever.
+
+Rules, in order of preference:
+
+1. **New files never conflict.** Put our logic in a new file in the relevant package
+   (e.g. `internal/camera/lanip.go`, `internal/wyzeapi/conn_state.go`). Go lets methods
+   on an upstream type live in any file in the package — `func (m *Manager) ...` does
+   not have to be in `manager.go`.
+2. **Prefer additions to rewrites.** A line we add conflicts only if upstream edits that
+   same spot; a line we rewrite conflicts with any upstream change to that function.
+   Appending `m.logLANIPConflict(cam)` after an existing log statement beats
+   restructuring that statement to carry one more field.
+3. **Leave signatures alone.** Widening an upstream function's returns conflicts at the
+   definition *and* every call site *and* every test. Accept a recompute or an extra
+   cached lookup instead.
+4. **Hook, don't inline.** Where upstream code genuinely must change, make it a one-line
+   delegation to a helper in one of our own files.
+
+Count the rewrites before merging work into an upstream-owned file — deletions are what
+actually conflict:
+
+```bash
+git diff HEAD -- internal/camera/manager.go | grep -cE '^-[^-]'
+```
+
+Enable `git config rerere.enabled true` so each conflict resolution is replayed on later
+pulls. For anything not Viam-specific, prefer a PR to `upstream`: merged code has no
+surface at all.
