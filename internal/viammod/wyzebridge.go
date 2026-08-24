@@ -269,7 +269,8 @@ const maxConcurrentProbes = 8
 // honest readiness: `rtsp_url` is included only for cameras that actually
 // produce media, and an `error` field carries go2rtc's reason (e.g. "discovery
 // timeout") for those that don't. With probe=false it skips the probe and
-// reports the manager's (optimistic) state for a fast, side-effect-free list.
+// reports the manager's (optimistic) state for a fast list that never dials a
+// camera (it still consults the host's cached neighbour table).
 func (s *service) listCameras(ctx context.Context, probe bool) map[string]interface{} {
 	cams := s.camMgr.Cameras()
 	list := make([]interface{}, len(cams))
@@ -287,6 +288,15 @@ func (s *service) listCameras(ctx context.Context, probe bool) map[string]interf
 			"nickname": snap.Info.Nickname,
 			"model":    snap.Info.Model,
 			"state":    snap.State.String(),
+			// ip + online separate "camera is off the network" from "camera
+			// is up but the transport failed"; a timeout alone can't.
+			"ip":     snap.Info.LanIP,
+			"online": snap.Info.Online,
+		}
+		// Only present when the two disagree, i.e. the camera moved and we
+		// recovered its real address from the neighbour table.
+		if dial := s.camMgr.DialIP(name); dial != "" && dial != snap.Info.LanIP {
+			entry["dial_ip"] = dial
 		}
 		list[i] = entry
 
@@ -308,6 +318,11 @@ func (s *service) listCameras(ctx context.Context, probe bool) map[string]interf
 				// let a stale "streaming" state read as usable.
 				entry["ready"] = false
 				entry["error"] = err.Error()
+				// go2rtc reports every unreachable address as "discovery
+				// timeout"; if the address is provably someone else's, say so.
+				if conflict := s.camMgr.LANIPConflict(name); conflict != "" {
+					entry["lan_ip_conflict"] = conflict
+				}
 				if snap.State == camera.StateStreaming {
 					entry["state"] = "error"
 				}

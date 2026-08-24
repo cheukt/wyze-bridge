@@ -155,3 +155,43 @@ func TestConfig_Validate_rdkSignature(t *testing.T) {
 		t.Error("Validate blank creds_file = nil error, want error")
 	}
 }
+
+// list_cameras must carry the dialed address and Wyze's own reachability
+// verdict — without them a "discovery timeout" is indistinguishable from the
+// camera simply being off the network.
+func TestDoCommand_listCameras_reportsIPAndOnline(t *testing.T) {
+	offline := camera.NewCamera(
+		wyzeapi.CameraInfo{Name: "litterbox", Nickname: "Litterbox", Model: "HL_CAM4",
+			LanIP: "10.0.0.9", Online: false},
+		"hd", true, false,
+	)
+	online := camera.NewCamera(
+		wyzeapi.CameraInfo{Name: "porch", Nickname: "Porch", Model: "HL_CAM4",
+			LanIP: "10.0.0.10", Online: true},
+		"hd", true, false,
+	)
+	s := newTestService(t, 8554, map[string]*camera.Camera{
+		"litterbox": offline,
+		"porch":     online,
+	})
+
+	cams := listNoProbe(t, s)["cameras"].([]interface{})
+	got := map[string]map[string]interface{}{}
+	for _, c := range cams {
+		e := c.(map[string]interface{})
+		got[e["name"].(string)] = e
+	}
+
+	if got["litterbox"]["ip"] != "10.0.0.9" {
+		t.Errorf("litterbox.ip = %v, want 10.0.0.9", got["litterbox"]["ip"])
+	}
+	if got["litterbox"]["online"] != false {
+		t.Errorf("litterbox.online = %v, want false", got["litterbox"]["online"])
+	}
+	if got["porch"]["ip"] != "10.0.0.10" {
+		t.Errorf("porch.ip = %v, want 10.0.0.10", got["porch"]["ip"])
+	}
+	if got["porch"]["online"] != true {
+		t.Errorf("porch.online = %v, want true", got["porch"]["online"])
+	}
+}
