@@ -326,6 +326,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 
 	streamURL, protocol := m.streamSourceFor(cam)
 	snap := cam.Snapshot()
+	m.logStaleLANIP(cam)
 
 	m.log.Debug().
 		Str("cam", cam.Name()).
@@ -377,6 +378,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 				Dur("backoff", backoff).
 				Int("errors", cam.GetErrorCount()).
 				Msg("connected to go2rtc but no media — marking errored")
+			m.logLANIPConflict(cam)
 			return
 		}
 	}
@@ -399,7 +401,7 @@ func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
 	case info.IsGwell():
 		return "", "gwell"
 	default:
-		return cam.StreamURL(), "tutk"
+		return tutkSource(cam), "tutk"
 	}
 }
 
@@ -503,6 +505,7 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 					Dur("backoff", backoff).
 					Int("errors", c.GetErrorCount()).
 					Msg("health probe failed — marking errored")
+				m.logLANIPConflict(c)
 			}
 		}(cam)
 	}
