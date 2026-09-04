@@ -148,6 +148,39 @@ on an on-device vision service; our event source is Wyze cloud motion via
 `DoCommand`, and our ~400-line component is leaner. Recorded so it isn't
 relitigated.
 
+### `get_recent_events` (notification feed)
+
+| Command | Action |
+|---------|--------|
+| `{"get_recent_events": {}}` | `{events: [<shaped event>, ...]}` — a bounded ring (16) of the shaped events behind each detected edge, oldest-first |
+
+The gate already detects every edge it cares about; this hands those out so a
+notifier doesn't have to re-derive them from the manager. Nothing else changes:
+same poll loop, same watermark, one extra append.
+
+Three properties a caller has to design around, all consequences of the poll
+loop rather than choices:
+
+- **It is a feed of edges, not a log.** The loop skips entirely while inside the
+  cooldown (5m) and asks for only `window_seconds` (20s) at a time, keeping the
+  single newest match — so at most one entry lands per cooldown, and an event
+  arriving between those marks is never seen at all.
+- **That rate is per component, not per camera**, because the cooldown gate is a
+  single component-wide watermark (`lastEventTS`). A component with
+  `camera_name` set sees its own camera's edges. An unscoped one rings whatever
+  the manager reports *and* still appends only once per cooldown across every
+  camera, so it drops most of them — it is not a usable per-camera feed, and two
+  unscoped components return the same events besides. A caller wanting per-camera
+  motion configures one scoped component per camera and dedupes across all of
+  them.
+- **There is no since/limit argument and no server clock in the response.** A
+  caller using our clock as a watermark is exactly what drops events racing the
+  read; it holds its own floor and seen-set anyway, so the parameters would only
+  filter what it re-filters.
+
+Entries are immutable once appended (`shapeEvent` returns a fresh map per call),
+which is what lets `DoCommand` hand the maps out and marshal them after the
+mutex is released.
 ### Opt-in stamping
 
 When enabled, the component stamps each captured frame with the active event id —

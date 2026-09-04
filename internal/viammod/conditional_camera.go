@@ -40,6 +40,11 @@ const (
 	// defaultCondPoll is how often the background loop polls the manager for
 	// events (when it isn't skipping the poll).
 	defaultCondPoll = 1 * time.Second
+
+	// maxRecentEvents caps the get_recent_events ring. An entry costs at least
+	// one cooldown (maybePoll skips inside it), so at the default this is ~80
+	// minutes of edges — enough that the command is worth running by hand.
+	maxRecentEvents = 16
 )
 
 func init() {
@@ -147,6 +152,13 @@ type conditionalCamera struct {
 	// carry the event they were captured for. May be empty if the event had no
 	// id.
 	lastEventID string
+	// recent is a bounded ring of the shaped events behind each detected edge,
+	// served by get_recent_events; recentIdx is the next slot to write, which
+	// once full is also the oldest entry. Entries must stay immutable after
+	// append — that is what lets DoCommand hand the maps out and marshal them
+	// with the mutex released.
+	recent    []map[string]interface{}
+	recentIdx int
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -234,14 +246,16 @@ func (cc *conditionalCamera) maybePoll(ctx context.Context) {
 		return
 	}
 
-	ts, id, ok := cc.fetchLatestEvent(ctx)
+	ts, event, ok := cc.fetchLatestEvent(ctx)
 	if !ok {
 		return
 	}
+	id, _ := event["event_id"].(string)
 	cc.mu.Lock()
 	if ts.After(cc.lastEventTS) {
 		cc.lastEventTS = ts
 		cc.lastEventID = id
+		cc.noteRecent(event)
 	}
 	cc.mu.Unlock()
 	if cc.debug {
@@ -251,24 +265,26 @@ func (cc *conditionalCamera) maybePoll(ctx context.Context) {
 }
 
 // fetchLatestEvent asks the manager for events within the window and returns
-// the newest matching event's timestamp and event_id, if any. The id may be
-// empty if the event carried none.
-func (cc *conditionalCamera) fetchLatestEvent(ctx context.Context) (time.Time, string, bool) {
+// the newest matching event's timestamp alongside the whole shaped event, if
+// any. The full event (not just its timestamp and id) is what feeds the
+// get_recent_events ring, which serves fields the gate itself never reads —
+// nickname, tags, thumbnail_url.
+func (cc *conditionalCamera) fetchLatestEvent(ctx context.Context) (time.Time, map[string]interface{}, bool) {
 	resp, err := cc.manager.DoCommand(ctx, map[string]interface{}{
 		"get_events": map[string]interface{}{"window_seconds": int(cc.window.Seconds())},
 	})
 	if err != nil {
 		cc.logger.Debugw("conditional camera: get_events failed", "error", err.Error())
-		return time.Time{}, "", false
+		return time.Time{}, nil, false
 	}
 
 	raw, ok := resp["events"].([]interface{})
 	if !ok {
-		return time.Time{}, "", false
+		return time.Time{}, nil, false
 	}
 
 	var newest time.Time
-	var newestID string
+	var newestEvent map[string]interface{}
 	for _, item := range raw {
 		e, ok := item.(map[string]interface{})
 		if !ok {
@@ -283,13 +299,38 @@ func (cc *conditionalCamera) fetchLatestEvent(ctx context.Context) (time.Time, s
 		}
 		if t := time.UnixMilli(ts); t.After(newest) {
 			newest = t
-			newestID, _ = e["event_id"].(string)
+			newestEvent = e
 		}
 	}
 	if newest.IsZero() {
-		return time.Time{}, "", false
+		return time.Time{}, nil, false
 	}
-	return newest, newestID, true
+	return newest, newestEvent, true
+}
+
+// noteRecent appends a shaped event to the ring, evicting the oldest once it is
+// full. Caller holds cc.mu.
+func (cc *conditionalCamera) noteRecent(e map[string]interface{}) {
+	if len(cc.recent) < maxRecentEvents {
+		cc.recent = append(cc.recent, e)
+		return
+	}
+	cc.recent[cc.recentIdx] = e
+	cc.recentIdx = (cc.recentIdx + 1) % maxRecentEvents
+}
+
+// recentEvents copies the ring out oldest-first. The slice is fresh; the event
+// maps are shared, which is safe because they are never mutated after append.
+func (cc *conditionalCamera) recentEvents() []interface{} {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+
+	n := len(cc.recent)
+	out := make([]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, cc.recent[(cc.recentIdx+i)%n])
+	}
+	return out
 }
 
 // matchesCamera reports whether a shaped event belongs to the configured
@@ -415,8 +456,29 @@ func (cc *conditionalCamera) Geometries(ctx context.Context, extra map[string]in
 	return nil, errUnimplemented
 }
 
-// DoCommand is unimplemented for this component.
+// DoCommand serves one command:
+//
+//	{"get_recent_events": {}}  ->  {"events": [<shaped event>, ...]}
+//
+// The whole ring, oldest-first. Two things a caller must design around:
+//
+// It is a feed of detected *edges*, not an event history. The poll loop skips
+// while inside the cooldown and asks for only window_seconds at a time, keeping
+// the single newest match, so at most one entry lands per cooldown and an event
+// arriving between those two marks is never seen.
+//
+// That rate is per component, not per camera, because the cooldown gate is one
+// component-wide watermark. A component with camera_name set therefore sees its
+// own camera's edges; an unscoped one rings whatever the manager reports and
+// still appends only once per cooldown across every camera, so it drops most of
+// them and is not a usable per-camera feed. Two unscoped components also return
+// the same events, so a caller polling several must dedupe across all of them.
+//
+// There is deliberately no since/limit argument. See DOCS/VIAM_MODULE.md.
 func (cc *conditionalCamera) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	if _, ok := cmd["get_recent_events"]; ok {
+		return map[string]interface{}{"events": cc.recentEvents()}, nil
+	}
 	return nil, resource.ErrDoUnimplemented
 }
 
