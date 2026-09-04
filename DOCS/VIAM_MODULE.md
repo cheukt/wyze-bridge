@@ -80,13 +80,14 @@ channel — would edit an upstream-owned file, so
 The full bridge (`cmd/wyze-bridge`, `cmd/wyze-headless`) keeps upstream behavior:
 a crashed go2rtc stays down. Fixing that belongs in an upstream PR.
 
-### No Reconfigure (`AlwaysRebuild`)
+### No Reconfigure (rebuild on every config change)
 
-The service embeds `resource.AlwaysRebuild`. On any config change viam-server
-calls `Close` then re-runs the constructor — no diff-the-config logic; the
-constructor builds everything, `Close` cancels the context and stops go2rtc.
-Cost accepted: every config edit respawns go2rtc and re-auths to Wyze (a few
-seconds of stream downtime). For a creds-oriented service that's fine.
+`resource.Resource` (RDK 1.6) has no `Reconfigure`, so a modular resource always
+rebuilds: on any config change viam-server calls `Close` then re-runs the
+constructor. No diff-the-config logic; the constructor builds everything, `Close`
+cancels the context and stops go2rtc. Cost accepted: every config edit respawns
+go2rtc and re-auths to Wyze (a few seconds of stream downtime). For a
+creds-oriented service that's fine.
 
 ### Credentials stay off the Viam cloud
 
@@ -301,7 +302,7 @@ delete** — minimize both.
 - **Discovery surface:** generic-service + `DoCommand list_cameras` (operator
   hand-adds one `viam:viamrtsp:rtsp` per camera). Not implementing the Viam
   Discovery service API for v1.
-- **`AlwaysRebuild`:** accepted; no partial `Reconfigure`.
+- **Rebuild on config change:** accepted; no partial `Reconfigure`.
 - **Secrets:** on-machine `creds_file` (dotenv, `0600`), never in the Viam cloud.
 - **Two repos, not three:** the gated camera stays with the manager.
 - **Keep our own gated camera**, not `erh/filtered_camera`.

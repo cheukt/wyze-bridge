@@ -33,7 +33,8 @@ func newZerologToViam(l logging.Logger) zerolog.Logger {
 // Viam logger. Both are deliberate global writes but benign: viam-server uses
 // zap, not rs/zerolog, so nothing else in the process reads these; widening
 // the gate is non-destructive (Viam does the real filtering). Idempotent — the
-// latest-constructed service wins, which is the AlwaysRebuild behavior we want.
+// latest-constructed service wins, which is what we want given every config
+// change rebuilds the service.
 func captureZerologGlobals(zl zerolog.Logger) {
 	zlog.Logger = zl
 	zerolog.SetGlobalLevel(zerolog.TraceLevel)

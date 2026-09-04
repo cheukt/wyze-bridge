@@ -120,12 +120,11 @@ func (c *ConditionalConfig) Validate(path string) (requiredDeps, optionalDeps []
 	return []string{c.Camera, c.Manager}, nil, nil
 }
 
-// conditionalCamera is the running component. It embeds resource.Named
-// (Name/DoCommand/Status) and resource.AlwaysRebuild (Reconfigure); Close is
-// implemented below to stop the poll goroutine.
+// conditionalCamera is the running component. It embeds resource.Named for
+// Name/Status; DoCommand and Close (which stops the poll goroutine) are
+// implemented below.
 type conditionalCamera struct {
 	resource.Named
-	resource.AlwaysRebuild
 
 	cam     camera.Camera
 	manager resource.Resource

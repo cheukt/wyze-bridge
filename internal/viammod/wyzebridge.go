@@ -48,7 +48,6 @@ func (c *Config) Validate(path string) (requiredDeps, optionalDeps []string, err
 // service is the running cheukt:wyze-bridge:manager resource.
 type service struct {
 	resource.Named
-	resource.AlwaysRebuild
 
 	camMgr   *camera.Manager
 	go2rtcS  *go2rtcSupervisor
