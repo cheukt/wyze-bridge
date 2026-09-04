@@ -3,6 +3,8 @@ package viammod
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -316,20 +318,30 @@ func TestConditional_fetchLatestEvent(t *testing.T) {
 		}
 	})
 
-	t.Run("returns event_id of newest matching", func(t *testing.T) {
+	t.Run("returns whole shaped event of newest matching", func(t *testing.T) {
 		withIDs := map[string]interface{}{
 			"events": []interface{}{
 				map[string]interface{}{"camera": "front_door", "event_ts": float64(now - 5000), "event_id": "older"},
-				map[string]interface{}{"camera": "front_door", "event_ts": float64(now), "event_id": "newest"},
+				map[string]interface{}{
+					"camera": "front_door", "event_ts": float64(now), "event_id": "newest",
+					"nickname": "Front Door", "thumbnail_url": "https://wyze/thumb.jpg",
+				},
 			},
 		}
 		cc := newTestCam(t, newFakeManager(withIDs, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
-		_, id, ok := cc.fetchLatestEvent(context.Background())
+		_, event, ok := cc.fetchLatestEvent(context.Background())
 		if !ok {
 			t.Fatal("expected an event")
 		}
-		if id != "newest" {
-			t.Fatalf("want event_id %q, got %q", "newest", id)
+		if got, _ := event["event_id"].(string); got != "newest" {
+			t.Fatalf("want event_id %q, got %q", "newest", got)
+		}
+		// The gate itself never reads these; the ring is why they're carried.
+		if got, _ := event["nickname"].(string); got != "Front Door" {
+			t.Fatalf("want nickname carried through, got %q", got)
+		}
+		if got, _ := event["thumbnail_url"].(string); got != "https://wyze/thumb.jpg" {
+			t.Fatalf("want thumbnail_url carried through, got %q", got)
 		}
 	})
 
@@ -374,6 +386,196 @@ func TestConditional_Validate(t *testing.T) {
 		}
 		if len(deps) != 2 || deps[0] != "cam" || deps[1] != "mgr" {
 			t.Fatalf("want deps [cam mgr], got %v", deps)
+		}
+	})
+}
+
+// eventIDs pulls the event_id out of each entry of a get_recent_events
+// response, so ring order assertions read as a plain string slice.
+func eventIDs(t *testing.T, resp map[string]interface{}) []string {
+	t.Helper()
+	raw, ok := resp["events"].([]interface{})
+	if !ok {
+		t.Fatalf("response has no events list: %v", resp)
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		e, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("event is not a map: %v", item)
+		}
+		id, _ := e["event_id"].(string)
+		out = append(out, id)
+	}
+	return out
+}
+
+// pollEvent drives one maybePoll with a manager returning a single event at ts
+// with the given id. Callers space ts far enough apart that the real cooldown
+// gate lets the next poll through, rather than reaching in to clear the
+// watermark — clearing it would also defeat the newer-than-watermark check
+// that decides whether an entry is a new edge at all.
+func pollEvent(t *testing.T, cc *conditionalCamera, id string, ts time.Time) {
+	t.Helper()
+	cc.manager = newFakeManager(map[string]interface{}{
+		"events": []interface{}{
+			map[string]interface{}{"camera": "front_door", "event_ts": float64(ts.UnixMilli()), "event_id": id},
+		},
+	}, nil)
+	cc.maybePoll(context.Background())
+}
+
+func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
+	ctx := context.Background()
+	// Edges are spaced past the cooldown and kept in the past, so every poll
+	// clears the cooldown skip the way it would in the field.
+	const step = 6 * time.Minute
+	base := time.Now().Add(-4 * time.Hour)
+	at := func(i int) time.Time { return base.Add(time.Duration(i) * step) }
+
+	t.Run("fresh component returns an empty, non-nil list", func(t *testing.T) {
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": map[string]interface{}{}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		events, ok := resp["events"].([]interface{})
+		if !ok {
+			t.Fatalf("events is not a list: %#v", resp["events"])
+		}
+		if events == nil {
+			t.Fatal("events must be an empty list, not nil, so it marshals as [] not null")
+		}
+		if len(events) != 0 {
+			t.Fatalf("want no events, got %d", len(events))
+		}
+	})
+
+	t.Run("accepts a bare truthy argument", func(t *testing.T) {
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		pollEvent(t, cc, "a", at(0))
+		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": true})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := eventIDs(t, resp); !slices.Equal(got, []string{"a"}) {
+			t.Fatalf("want the same ring as the object form, got %v", got)
+		}
+	})
+
+	t.Run("one entry per detected edge, oldest first", func(t *testing.T) {
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		for i, id := range []string{"a", "b", "c"} {
+			pollEvent(t, cc, id, at(i))
+		}
+		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": map[string]interface{}{}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := eventIDs(t, resp); !slices.Equal(got, []string{"a", "b", "c"}) {
+			t.Fatalf("want [a b c] oldest-first, got %v", got)
+		}
+	})
+
+	t.Run("a poll that advances nothing appends nothing", func(t *testing.T) {
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		pollEvent(t, cc, "a", at(1))
+		// Neither the same event nor an older one is a new edge.
+		pollEvent(t, cc, "a", at(1))
+		pollEvent(t, cc, "older", at(0))
+
+		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": map[string]interface{}{}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := eventIDs(t, resp); !slices.Equal(got, []string{"a"}) {
+			t.Fatalf("want only the one edge [a], got %v", got)
+		}
+	})
+
+	t.Run("ring wraps and evicts oldest", func(t *testing.T) {
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		want := make([]string, 0, maxRecentEvents)
+		total := maxRecentEvents + 3
+		for i := 0; i < total; i++ {
+			id := fmt.Sprintf("e%02d", i)
+			pollEvent(t, cc, id, at(i))
+			if i >= total-maxRecentEvents {
+				want = append(want, id)
+			}
+		}
+		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": map[string]interface{}{}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := eventIDs(t, resp)
+		if len(got) != maxRecentEvents {
+			t.Fatalf("want ring capped at %d, got %d", maxRecentEvents, len(got))
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("want %v (oldest three evicted), got %v", want, got)
+		}
+	})
+
+	t.Run("unscoped component rings other cameras' events", func(t *testing.T) {
+		// camera_name empty means matchesCamera never runs, so the ring is not
+		// per-camera. Callers have to dedupe across components, not per one.
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc.manager = newFakeManager(map[string]interface{}{
+			"events": []interface{}{
+				map[string]interface{}{"camera": "garage", "event_ts": float64(at(0).UnixMilli()), "event_id": "g1"},
+			},
+		}, nil)
+		cc.maybePoll(ctx)
+
+		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": map[string]interface{}{}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := eventIDs(t, resp); !slices.Equal(got, []string{"g1"}) {
+			t.Fatalf("want the garage event ringed, got %v", got)
+		}
+	})
+
+	t.Run("serves the whole shaped event, not just the timestamp", func(t *testing.T) {
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		cc.manager = newFakeManager(map[string]interface{}{
+			"events": []interface{}{
+				map[string]interface{}{
+					"camera": "front_door", "event_ts": float64(at(0).UnixMilli()),
+					"event_id": "a", "nickname": "Front Door",
+					"tags":          []interface{}{"person"},
+					"thumbnail_url": "https://wyze/thumb.jpg",
+					"time":          at(0).UTC().Format(time.RFC3339),
+				},
+			},
+		}, nil)
+		cc.maybePoll(ctx)
+
+		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": map[string]interface{}{}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		events, _ := resp["events"].([]interface{})
+		if len(events) != 1 {
+			t.Fatalf("want one event, got %d", len(events))
+		}
+		got, ok := events[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("event is not a map: %v", events[0])
+		}
+		// The gate reads none of these; a notifier's embed needs all of them.
+		for _, k := range []string{"nickname", "tags", "thumbnail_url", "time"} {
+			if _, present := got[k]; !present {
+				t.Errorf("shaped event lost %q on the way through the ring: %v", k, got)
+			}
+		}
+	})
+
+	t.Run("unknown command still errors", func(t *testing.T) {
+		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		if _, err := cc.DoCommand(ctx, map[string]interface{}{"nope": map[string]interface{}{}}); !errors.Is(err, resource.ErrDoUnimplemented) {
+			t.Fatalf("want ErrDoUnimplemented, got %v", err)
 		}
 	})
 }

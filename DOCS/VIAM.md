@@ -11,7 +11,8 @@ The `cheukt:wyze-bridge` Viam module exposes Wyze cameras to a Viam machine.
   (`list_cameras`, `get_events`).
 - **`cheukt:wyze-bridge:conditional-camera`** (`rdk:component:camera`) — wraps an
   underlying camera and gates its data-management captures on recent Wyze motion
-  events reported by the manager.
+  events reported by the manager. Exposes the motion edges it detects over
+  `DoCommand` (`get_recent_events`) for notifiers to poll.
 
 The LAN-local dashboard (camera video + a browsable history of uploaded
 motion-event images) now ships as a separate module, `cheukt:home:home-ui`.
