@@ -7,49 +7,36 @@ import (
 	"testing"
 )
 
-func TestConfig_validate(t *testing.T) {
+// Validate is the rdk-facing entry point; it returns (required, optional, err)
+// and delegates to validate.
+func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name      string
-		cfg       Config
+		credsFile string
 		wantErr   bool
-		errSubstr string
 	}{
-		{
-			name:    "ok with creds_file",
-			cfg:     Config{CredsFile: "/etc/wyze-bridge/wyze.env"},
-			wantErr: false,
-		},
-		{
-			name:      "blank creds_file rejected",
-			cfg:       Config{CredsFile: ""},
-			wantErr:   true,
-			errSubstr: "creds_file",
-		},
-		{
-			name:      "whitespace-only creds_file rejected",
-			cfg:       Config{CredsFile: "   "},
-			wantErr:   true,
-			errSubstr: "creds_file",
-		},
+		{"ok with creds_file", "/etc/wyze-bridge/wyze.env", false},
+		{"blank creds_file rejected", "", true},
+		{"whitespace-only creds_file rejected", "   ", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			deps, err := tt.cfg.validate("services.wyze")
+			req, opt, err := (&Config{CredsFile: tt.credsFile}).Validate("services.wyze")
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("validate() = nil error, want error")
+					t.Fatal("Validate() = nil error, want error")
 				}
-				if !strings.Contains(err.Error(), tt.errSubstr) {
-					t.Errorf("validate() error = %q, want substring %q", err, tt.errSubstr)
+				if !strings.Contains(err.Error(), "creds_file") {
+					t.Errorf("Validate() error = %q, want it to name creds_file", err)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("validate() unexpected error: %v", err)
+				t.Fatalf("Validate() unexpected error: %v", err)
 			}
-			if len(deps) != 0 {
-				t.Errorf("validate() deps = %v, want none (self-contained)", deps)
+			if len(req) != 0 || len(opt) != 0 {
+				t.Errorf("Validate() deps = (%v, %v), want none (self-contained)", req, opt)
 			}
 		})
 	}
@@ -65,17 +52,15 @@ func TestLoadCredsFile(t *testing.T) {
 	)
 
 	t.Run("full creds with optional totp and quoting", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "wyze.env")
-		writeFile(t, path, strings.Join([]string{
+		path := credsFile(t,
 			"# Wyze creds",
-			"export WYZE_EMAIL=" + email,
-			`WYZE_PASSWORD="` + pass + `"`,
-			"WYZE_API_ID = " + apiID, // spaces around =
-			"WYZE_API_KEY='" + apiKy + "'",
-			"WYZE_TOTP_KEY=" + totp,
+			"export WYZE_EMAIL="+email,
+			`WYZE_PASSWORD="`+pass+`"`,
+			"WYZE_API_ID = "+apiID, // spaces around =
+			"WYZE_API_KEY='"+apiKy+"'",
+			"WYZE_TOTP_KEY="+totp,
 			"",
-		}, "\n"))
+		)
 
 		creds, err := loadCredsFile(path)
 		if err != nil {
@@ -102,14 +87,12 @@ func TestLoadCredsFile(t *testing.T) {
 	})
 
 	t.Run("totp optional", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "wyze.env")
-		writeFile(t, path, strings.Join([]string{
-			"WYZE_EMAIL=" + email,
-			"WYZE_PASSWORD=" + pass,
-			"WYZE_API_ID=" + apiID,
-			"WYZE_API_KEY=" + apiKy,
-		}, "\n"))
+		path := credsFile(t,
+			"WYZE_EMAIL="+email,
+			"WYZE_PASSWORD="+pass,
+			"WYZE_API_ID="+apiID,
+			"WYZE_API_KEY="+apiKy,
+		)
 
 		creds, err := loadCredsFile(path)
 		if err != nil {
@@ -124,13 +107,11 @@ func TestLoadCredsFile(t *testing.T) {
 	})
 
 	t.Run("missing required keys are named, no value leaked", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "wyze.env")
 		// Only email + api_id present; password + api_key missing.
-		writeFile(t, path, strings.Join([]string{
-			"WYZE_EMAIL=" + email,
-			"WYZE_API_ID=" + apiID,
-		}, "\n"))
+		path := credsFile(t,
+			"WYZE_EMAIL="+email,
+			"WYZE_API_ID="+apiID,
+		)
 
 		_, err := loadCredsFile(path)
 		if err == nil {
@@ -154,14 +135,12 @@ func TestLoadCredsFile(t *testing.T) {
 	})
 
 	t.Run("blank value counts as missing", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "wyze.env")
-		writeFile(t, path, strings.Join([]string{
-			"WYZE_EMAIL=" + email,
+		path := credsFile(t,
+			"WYZE_EMAIL="+email,
 			"WYZE_PASSWORD=",
-			"WYZE_API_ID=" + apiID,
-			"WYZE_API_KEY=" + apiKy,
-		}, "\n"))
+			"WYZE_API_ID="+apiID,
+			"WYZE_API_KEY="+apiKy,
+		)
 
 		_, err := loadCredsFile(path)
 		if err == nil {
@@ -222,9 +201,12 @@ func TestBuildBridgeConfig_filters(t *testing.T) {
 	}
 }
 
-func writeFile(t *testing.T, path, content string) {
+// credsFile writes the given lines to a temp env file and returns its path.
+func credsFile(t *testing.T, lines ...string) string {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+	path := filepath.Join(t.TempDir(), "wyze.env")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600); err != nil {
 		t.Fatalf("write %q: %v", path, err)
 	}
+	return path
 }

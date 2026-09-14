@@ -5,10 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rs/zerolog"
-
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
-	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -26,21 +23,8 @@ func (f *fakeEventLister) GetEventList(_ context.Context, macs []string, beginMS
 	return f.events, f.err
 }
 
-// newEventService builds a service with the given cameras and fake API.
-func newEventService(t *testing.T, api eventLister, cams ...*camera.Camera) *service {
-	t.Helper()
-	mgr := camera.NewManager(&config.Config{}, nil, nil, zerolog.Nop())
-	for _, cam := range cams {
-		mgr.InjectCamera(cam.Name(), cam)
-	}
-	return &service{camMgr: mgr, api: api, rtspPort: 8554}
-}
-
 func camWithMAC(name, nickname, mac string) *camera.Camera {
-	return camera.NewCamera(
-		wyzeapi.CameraInfo{Name: name, Nickname: nickname, MAC: mac},
-		"hd", true, false,
-	)
+	return testCamera(wyzeapi.CameraInfo{Name: name, Nickname: nickname, MAC: mac})
 }
 
 func TestDoCommand_getEvents_shapesAndResolves(t *testing.T) {
@@ -59,7 +43,7 @@ func TestDoCommand_getEvents_shapesAndResolves(t *testing.T) {
 		},
 	}}
 	cam := camWithMAC("front_door", "Front Door", "AABBCCDDEEFF")
-	s := newEventService(t, api, cam)
+	s := newTestService(t, 8554, api, cam)
 
 	out, err := s.DoCommand(context.Background(), map[string]interface{}{"get_events": true})
 	if err != nil {
@@ -74,31 +58,20 @@ func TestDoCommand_getEvents_shapesAndResolves(t *testing.T) {
 		t.Fatalf("len(events) = %d, want 1", len(events))
 	}
 	e := events[0].(map[string]interface{})
-	if e["camera"] != "front_door" {
-		t.Errorf("camera = %v, want front_door", e["camera"])
+
+	want := map[string]interface{}{
+		"camera": "front_door", "nickname": "Front Door", "model": "HL_CAM4",
+		"event_id": "evt-1", "time": "2023-11-14T22:13:20Z",
+		"thumbnail_url": "https://wyze/thumb.jpg", "video_url": "https://wyze/clip.mp4",
 	}
-	if e["nickname"] != "Front Door" {
-		t.Errorf("nickname = %v, want Front Door", e["nickname"])
-	}
-	if e["time"] != "2023-11-14T22:13:20Z" {
-		t.Errorf("time = %v, want 2023-11-14T22:13:20Z", e["time"])
-	}
-	if e["event_id"] != "evt-1" {
-		t.Errorf("event_id = %v, want evt-1", e["event_id"])
-	}
-	if e["model"] != "HL_CAM4" {
-		t.Errorf("model = %v, want HL_CAM4", e["model"])
+	for k, v := range want {
+		if e[k] != v {
+			t.Errorf("%s = %v, want %v", k, e[k], v)
+		}
 	}
 	// Non-string tag entries are dropped.
-	tags := e["tags"].([]string)
-	if len(tags) != 2 || tags[0] != "person" || tags[1] != "vehicle" {
+	if tags := e["tags"].([]string); len(tags) != 2 || tags[0] != "person" || tags[1] != "vehicle" {
 		t.Errorf("tags = %v, want [person vehicle]", tags)
-	}
-	if e["thumbnail_url"] != "https://wyze/thumb.jpg" {
-		t.Errorf("thumbnail_url = %v, want https://wyze/thumb.jpg", e["thumbnail_url"])
-	}
-	if e["video_url"] != "https://wyze/clip.mp4" {
-		t.Errorf("video_url = %v, want https://wyze/clip.mp4", e["video_url"])
 	}
 	if _, hasRaw := e["file_list"]; hasRaw {
 		t.Error("raw file_list leaked into shaped event")
@@ -110,7 +83,7 @@ func TestGetEvents_resolvesCameraFromEventID(t *testing.T) {
 	api := &fakeEventLister{events: []map[string]interface{}{
 		{"event_id": "80482CAA9F2F011782509992", "event_ts": float64(1782509992799), "event_value": "1"},
 	}}
-	s := newEventService(t, api, camWithMAC("garage", "Garage", "80482CAA9F2F"))
+	s := newTestService(t, 8554, api, camWithMAC("garage", "Garage", "80482CAA9F2F"))
 
 	out, err := s.getEvents(context.Background(), defaultEventWindow)
 	if err != nil {
@@ -127,7 +100,7 @@ func TestGetEvents_resolvesCameraFromEventID(t *testing.T) {
 
 func TestGetEvents_passesAllCameraMACs(t *testing.T) {
 	api := &fakeEventLister{}
-	s := newEventService(t, api,
+	s := newTestService(t, 8554, api,
 		camWithMAC("a", "A", "MAC-A"),
 		camWithMAC("b", "B", "MAC-B"),
 		camWithMAC("noMAC", "NoMAC", ""), // skipped — no MAC
@@ -153,7 +126,7 @@ func TestGetEvents_returnsAllEvents(t *testing.T) {
 		{"device_id": "M", "event_value": "2"},
 		{"device_id": "M"},
 	}}
-	s := newEventService(t, api, camWithMAC("cam", "Cam", "M"))
+	s := newTestService(t, 8554, api, camWithMAC("cam", "Cam", "M"))
 
 	out, err := s.getEvents(context.Background(), defaultEventWindow)
 	if err != nil {
@@ -166,7 +139,7 @@ func TestGetEvents_returnsAllEvents(t *testing.T) {
 
 func TestGetEvents_noCamerasSkipsAPI(t *testing.T) {
 	api := &fakeEventLister{events: []map[string]interface{}{{"device_mac": "X"}}}
-	s := newEventService(t, api) // no cameras
+	s := newTestService(t, 8554, api) // no cameras
 
 	out, err := s.getEvents(context.Background(), defaultEventWindow)
 	if err != nil {
@@ -182,7 +155,7 @@ func TestGetEvents_noCamerasSkipsAPI(t *testing.T) {
 
 func TestGetEvents_windowOverride(t *testing.T) {
 	api := &fakeEventLister{}
-	s := newEventService(t, api, camWithMAC("cam", "Cam", "M"))
+	s := newTestService(t, 8554, api, camWithMAC("cam", "Cam", "M"))
 
 	out, err := s.DoCommand(context.Background(), map[string]interface{}{
 		"get_events": map[string]interface{}{"window_seconds": float64(120)},
@@ -200,7 +173,7 @@ func TestGetEvents_windowOverride(t *testing.T) {
 
 func TestGetEvents_apiError(t *testing.T) {
 	api := &fakeEventLister{err: errors.New("boom")}
-	s := newEventService(t, api, camWithMAC("cam", "Cam", "M"))
+	s := newTestService(t, 8554, api, camWithMAC("cam", "Cam", "M"))
 
 	if _, err := s.getEvents(context.Background(), defaultEventWindow); err == nil {
 		t.Error("getEvents = nil error, want propagated API error")

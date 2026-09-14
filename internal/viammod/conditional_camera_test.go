@@ -77,30 +77,25 @@ func (f *fakeCam) Geometries(context.Context, map[string]interface{}) ([]spatial
 	return nil, nil
 }
 
-// newTestCam builds a conditionalCamera wired to fakes with the given timings.
-func newTestCam(t *testing.T, mgr resource.Resource, cam camera.Camera, window, cooldown time.Duration, camName string) *conditionalCamera {
+// newTestCam builds a conditionalCamera wired to fakes: a camera yielding one
+// empty frame and a manager with no events, which tests needing a scripted
+// response replace via cc.manager.
+func newTestCam(t *testing.T, camName string) *conditionalCamera {
 	t.Helper()
 	return &conditionalCamera{
 		Named:    camera.Named("cond").AsNamed(),
-		cam:      cam,
-		manager:  mgr,
+		cam:      &fakeCam{imgs: []camera.NamedImage{{}}},
+		manager:  newFakeManager(nil, nil),
 		logger:   logging.NewTestLogger(t),
 		camName:  camName,
-		window:   window,
-		cooldown: cooldown,
+		window:   20 * time.Second,
+		cooldown: 5 * time.Minute,
 		poll:     time.Second,
 	}
 }
 
-// oneImageCam returns a fakeCam that yields a single (empty) named image so the
-// Images passthrough has something to return.
-func oneImageCam() *fakeCam {
-	return &fakeCam{imgs: []camera.NamedImage{{}}}
-}
-
 func TestConditional_Images_gatesDataMgmt(t *testing.T) {
-	cam := oneImageCam()
-	cc := newTestCam(t, newFakeManager(nil, nil), cam, 20*time.Second, 5*time.Minute, "")
+	cc := newTestCam(t, "")
 
 	dm := data.FromDMExtraMap // {"fromDataManagement": true}
 
@@ -149,7 +144,7 @@ func TestConditional_Images_stampsEventID(t *testing.T) {
 	// stampedCam builds a data-mgmt-gated cam with stamping enabled and an
 	// active event carrying the given id and label prefix.
 	stampedCam := func(t *testing.T, id, prefix string) *conditionalCamera {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc := newTestCam(t, "")
 		cc.lastEventTS = time.Now()
 		cc.lastEventID = id
 		cc.stampEnabled = true
@@ -190,7 +185,7 @@ func TestConditional_Images_stampsEventID(t *testing.T) {
 	})
 
 	t.Run("stamping disabled -> no annotations even with active event", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc := newTestCam(t, "")
 		cc.lastEventTS = time.Now()
 		cc.lastEventID = "abc123"
 		// stampEnabled defaults to false.
@@ -253,8 +248,8 @@ func TestConditional_resolveStamp(t *testing.T) {
 }
 
 func TestConditional_maybePoll_skipsWithinCooldown(t *testing.T) {
-	mgr := newFakeManager(map[string]interface{}{"events": []interface{}{}}, nil)
-	cc := newTestCam(t, mgr, oneImageCam(), 20*time.Second, 5*time.Minute, "")
+	cc := newTestCam(t, "")
+	mgr := cc.manager.(*fakeManager)
 
 	// Event 10s ago: inside the 20s window AND the 5m cooldown -> no poll.
 	cc.lastEventTS = time.Now().Add(-10 * time.Second)
@@ -297,7 +292,8 @@ func TestConditional_fetchLatestEvent(t *testing.T) {
 	}
 
 	t.Run("scoped to camera_name picks newest matching", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(resp, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		cc := newTestCam(t, "front_door")
+		cc.manager = newFakeManager(resp, nil)
 		ts, _, ok := cc.fetchLatestEvent(context.Background())
 		if !ok {
 			t.Fatal("expected an event")
@@ -308,7 +304,8 @@ func TestConditional_fetchLatestEvent(t *testing.T) {
 	})
 
 	t.Run("unscoped picks newest overall", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(resp, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc := newTestCam(t, "")
+		cc.manager = newFakeManager(resp, nil)
 		ts, _, ok := cc.fetchLatestEvent(context.Background())
 		if !ok {
 			t.Fatal("expected an event")
@@ -318,17 +315,14 @@ func TestConditional_fetchLatestEvent(t *testing.T) {
 		}
 	})
 
-	t.Run("returns whole shaped event of newest matching", func(t *testing.T) {
-		withIDs := map[string]interface{}{
+	t.Run("returns the newest matching event, not just its time", func(t *testing.T) {
+		cc := newTestCam(t, "front_door")
+		cc.manager = newFakeManager(map[string]interface{}{
 			"events": []interface{}{
 				map[string]interface{}{"camera": "front_door", "event_ts": float64(now - 5000), "event_id": "older"},
-				map[string]interface{}{
-					"camera": "front_door", "event_ts": float64(now), "event_id": "newest",
-					"nickname": "Front Door", "thumbnail_url": "https://wyze/thumb.jpg",
-				},
+				map[string]interface{}{"camera": "front_door", "event_ts": float64(now), "event_id": "newest"},
 			},
-		}
-		cc := newTestCam(t, newFakeManager(withIDs, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		}, nil)
 		_, event, ok := cc.fetchLatestEvent(context.Background())
 		if !ok {
 			t.Fatal("expected an event")
@@ -336,24 +330,19 @@ func TestConditional_fetchLatestEvent(t *testing.T) {
 		if got, _ := event["event_id"].(string); got != "newest" {
 			t.Fatalf("want event_id %q, got %q", "newest", got)
 		}
-		// The gate itself never reads these; the ring is why they're carried.
-		if got, _ := event["nickname"].(string); got != "Front Door" {
-			t.Fatalf("want nickname carried through, got %q", got)
-		}
-		if got, _ := event["thumbnail_url"].(string); got != "https://wyze/thumb.jpg" {
-			t.Fatalf("want thumbnail_url carried through, got %q", got)
-		}
 	})
 
 	t.Run("no matching camera -> none", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(resp, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "backyard")
+		cc := newTestCam(t, "backyard")
+		cc.manager = newFakeManager(resp, nil)
 		if _, _, ok := cc.fetchLatestEvent(context.Background()); ok {
 			t.Fatal("expected no event for unknown camera")
 		}
 	})
 
 	t.Run("manager error -> none", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, errors.New("boom")), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc := newTestCam(t, "")
+		cc.manager = newFakeManager(nil, errors.New("boom"))
 		if _, _, ok := cc.fetchLatestEvent(context.Background()); ok {
 			t.Fatal("expected no event on manager error")
 		}
@@ -434,7 +423,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	at := func(i int) time.Time { return base.Add(time.Duration(i) * step) }
 
 	t.Run("fresh component returns an empty, non-nil list", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc := newTestCam(t, "")
 		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": map[string]interface{}{}})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -452,7 +441,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	})
 
 	t.Run("accepts a bare truthy argument", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		cc := newTestCam(t, "front_door")
 		pollEvent(t, cc, "a", at(0))
 		resp, err := cc.DoCommand(ctx, map[string]interface{}{"get_recent_events": true})
 		if err != nil {
@@ -464,7 +453,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	})
 
 	t.Run("one entry per detected edge, oldest first", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		cc := newTestCam(t, "front_door")
 		for i, id := range []string{"a", "b", "c"} {
 			pollEvent(t, cc, id, at(i))
 		}
@@ -478,7 +467,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	})
 
 	t.Run("a poll that advances nothing appends nothing", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		cc := newTestCam(t, "front_door")
 		pollEvent(t, cc, "a", at(1))
 		// Neither the same event nor an older one is a new edge.
 		pollEvent(t, cc, "a", at(1))
@@ -494,7 +483,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	})
 
 	t.Run("ring wraps and evicts oldest", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		cc := newTestCam(t, "front_door")
 		want := make([]string, 0, maxRecentEvents)
 		total := maxRecentEvents + 3
 		for i := 0; i < total; i++ {
@@ -520,7 +509,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	t.Run("unscoped component rings other cameras' events", func(t *testing.T) {
 		// camera_name empty means matchesCamera never runs, so the ring is not
 		// per-camera. Callers have to dedupe across components, not per one.
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc := newTestCam(t, "")
 		cc.manager = newFakeManager(map[string]interface{}{
 			"events": []interface{}{
 				map[string]interface{}{"camera": "garage", "event_ts": float64(at(0).UnixMilli()), "event_id": "g1"},
@@ -538,7 +527,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	})
 
 	t.Run("serves the whole shaped event, not just the timestamp", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "front_door")
+		cc := newTestCam(t, "front_door")
 		cc.manager = newFakeManager(map[string]interface{}{
 			"events": []interface{}{
 				map[string]interface{}{
@@ -573,7 +562,7 @@ func TestConditional_DoCommand_getRecentEvents(t *testing.T) {
 	})
 
 	t.Run("unknown command still errors", func(t *testing.T) {
-		cc := newTestCam(t, newFakeManager(nil, nil), oneImageCam(), 20*time.Second, 5*time.Minute, "")
+		cc := newTestCam(t, "")
 		if _, err := cc.DoCommand(ctx, map[string]interface{}{"nope": map[string]interface{}{}}); !errors.Is(err, resource.ErrDoUnimplemented) {
 			t.Fatalf("want ErrDoUnimplemented, got %v", err)
 		}

@@ -142,34 +142,6 @@ func TestAPIClient_GetSnapshot(t *testing.T) {
 	}
 }
 
-// go2rtc returns 200 OK with an empty body when the lazy source is registered
-// but produces no frame (camera not actually streaming). GetSnapshot must treat
-// that as an error, not a successful snapshot, so liveness probes stay honest.
-func TestAPIClient_GetSnapshot_emptyBodyIsError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK) // Content-Length: 0, no body
-	}))
-	defer server.Close()
-
-	c := NewAPIClient(server.URL, zerolog.Nop())
-	if _, err := c.GetSnapshot(context.Background(), "dead_cam"); err == nil {
-		t.Fatal("GetSnapshot = nil error for empty 200 body, want error")
-	}
-}
-
-// A 200 with a non-JPEG payload (e.g. an HTML error page) is not a frame.
-func TestAPIClient_GetSnapshot_nonJPEGIsError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("<html>nope</html>"))
-	}))
-	defer server.Close()
-
-	c := NewAPIClient(server.URL, zerolog.Nop())
-	if _, err := c.GetSnapshot(context.Background(), "dead_cam"); err == nil {
-		t.Fatal("GetSnapshot = nil error for non-JPEG body, want error")
-	}
-}
-
 // ProbeFrame hits /api/frame.mp4 (codec copy, no ffmpeg) and accepts a body
 // that opens with an MP4 'ftyp' box as proof of a live frame.
 func TestAPIClient_ProbeFrame(t *testing.T) {
@@ -190,31 +162,23 @@ func TestAPIClient_ProbeFrame(t *testing.T) {
 	}
 }
 
-// go2rtc answers 200 with an empty body when the lazy source is registered but
-// never produces a frame. ProbeFrame must treat that as an error so liveness
-// probes stay honest.
-func TestAPIClient_ProbeFrame_emptyBodyIsError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK) // Content-Length: 0, no body
-	}))
-	defer server.Close()
+// go2rtc answers 200 with an empty body when a lazy source is registered but
+// never produces a frame, and with an HTML error page when it fails otherwise.
+// Neither is a frame, so both probes must error rather than report liveness.
+func TestAPIClient_frameProbesRejectNonFrameBodies(t *testing.T) {
+	for _, body := range [][]byte{nil, []byte("<html>nope</html>")} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(body)
+		}))
 
-	c := NewAPIClient(server.URL, zerolog.Nop())
-	if err := c.ProbeFrame(context.Background(), "dead_cam"); err == nil {
-		t.Fatal("ProbeFrame = nil error for empty 200 body, want error")
-	}
-}
-
-// A 200 with a non-MP4 payload (e.g. an HTML error page) is not a frame.
-func TestAPIClient_ProbeFrame_nonMP4IsError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("<html>nope</html>"))
-	}))
-	defer server.Close()
-
-	c := NewAPIClient(server.URL, zerolog.Nop())
-	if err := c.ProbeFrame(context.Background(), "dead_cam"); err == nil {
-		t.Fatal("ProbeFrame = nil error for non-MP4 body, want error")
+		c := NewAPIClient(server.URL, zerolog.Nop())
+		if _, err := c.GetSnapshot(context.Background(), "dead_cam"); err == nil {
+			t.Errorf("GetSnapshot(body %q) = nil error, want error", body)
+		}
+		if err := c.ProbeFrame(context.Background(), "dead_cam"); err == nil {
+			t.Errorf("ProbeFrame(body %q) = nil error, want error", body)
+		}
+		server.Close()
 	}
 }
 
