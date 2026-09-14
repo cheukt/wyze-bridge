@@ -177,6 +177,11 @@ func (c *Client) validateResponse(resp *http.Response) (map[string]interface{}, 
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		// A non-JSON body is the status talking (a 429 with no body, an HTML
+		// 502 from the edge) — report that, not the decode failure.
+		if serr := statusError(resp.StatusCode, bodyBytes); serr != nil {
+			return nil, serr
+		}
 		return nil, fmt.Errorf("json decode (status %d): %w", resp.StatusCode, err)
 	}
 
@@ -212,17 +217,8 @@ func (c *Client) validateResponse(resp *http.Response) (map[string]interface{}, 
 		}
 	}
 
-	if resp.StatusCode >= 500 {
-		return nil, fmt.Errorf("Wyze cloud HTTP %d (%s) — cloud is degraded, will retry", resp.StatusCode, http.StatusText(resp.StatusCode))
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("Wyze cloud HTTP 429 (rate limited) — back off and retry")
-	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("Wyze cloud HTTP %d (%s) — check WYZE_API_ID / WYZE_API_KEY, account may be locked", resp.StatusCode, http.StatusText(resp.StatusCode))
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("Wyze cloud HTTP %d (%s): %s", resp.StatusCode, http.StatusText(resp.StatusCode), string(bodyBytes))
+	if err := statusError(resp.StatusCode, bodyBytes); err != nil {
+		return nil, err
 	}
 
 	// Return the "data" sub-object if present, otherwise the whole thing

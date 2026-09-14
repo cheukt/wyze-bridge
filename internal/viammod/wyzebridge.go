@@ -92,7 +92,8 @@ func newService(
 	serviceCtx, cancel := context.WithCancel(context.Background())
 
 	apiClient := wyzeapi.NewClient(creds, Version, zl.With().Str("c", "wyzeapi").Logger())
-	camMgr := camera.NewManager(bridgeCfg, apiClient, nil, zl.With().Str("c", "camera").Logger())
+	camLog := zl.With().Str("c", "camera").Logger()
+	camMgr := camera.NewManager(bridgeCfg, apiClient, nil, camLog)
 	// Actively verify media so camera state reflects reality, not just go2rtc
 	// stream registration (go2rtc connects sources lazily).
 	camMgr.SetHealthProbe(true)
@@ -114,7 +115,11 @@ func newService(
 		supLog)
 	go go2rtcS.Run(serviceCtx)
 
-	go camMgr.RunDiscoveryLoop(serviceCtx)
+	go func() {
+		if awaitInitialDiscovery(serviceCtx, camMgr, discoveryRetryInterval, camLog) {
+			camMgr.RunDiscoveryLoop(serviceCtx)
+		}
+	}()
 
 	logger.Infow("wyze-bridge manager started",
 		"rtsp_port", rtspPort, "state_dir", bridgeCfg.StateDir)
